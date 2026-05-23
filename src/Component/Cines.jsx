@@ -75,7 +75,7 @@ export const Cines = () => {
                       loading="lazy"
                       allowFullScreen=""
                       referrerPolicy="no-referrer-when-downgrade"
-                      src={`https://www.google.com/maps/embed/v1/place?key=YOUR_GOOGLE_MAPS_API_KEY&q=${encodeURIComponent(cine.direccion)}`}
+                      src={`https://www.google.com/maps/embed/v1/place?key=AIzaSyCyPr1cQDf26eCNuZTFy2nupCChLrKD7ZM&q=${encodeURIComponent(cine.direccion)}`}
                     ></iframe>
                   </div>
                   <p className="text-xs text-slate-400 mt-2 text-center">Haz click en el mapa para ver en Google Maps</p>
@@ -151,7 +151,7 @@ export const Cines = () => {
                 loading="lazy"
                 allowFullScreen=""
                 referrerPolicy="no-referrer-when-downgrade"
-                src={`https://www.google.com/maps/embed/v1/place?key=YOUR_GOOGLE_MAPS_API_KEY&q=${encodeURIComponent(selectedCine.direccion)}`}
+                src={`https://www.google.com/maps/embed/v1/place?key=AIzaSyCyPr1cQDf26eCNuZTFy2nupCChLrKD7ZM&q=${encodeURIComponent(selectedCine.direccion)}`}
               ></iframe>
             </div>
 
