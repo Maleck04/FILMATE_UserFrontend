@@ -7,7 +7,7 @@ import Cines from './Component/Cines.jsx';
 import Dulceria from './Component/Dulceria.jsx';
 import Social from './Component/Social.jsx';
 import DetallePelicula from './Component/DetallePelicula.jsx';
-import AdminGestion from './Component/AdminGestion.jsx'; // 1. Panel temporal
+import Locales from './Component/Locales.jsx';
 
 function App() {
   return (
@@ -20,9 +20,7 @@ function App() {
         <Route path="/dulceria" element={<Dulceria />} />
         <Route path="/social" element={<Social />} />
         <Route path="/menuPrincipal/detallePelicula" element={<DetallePelicula />} />
-        
-        {/* 2. Ruta de pruebas */}
-        <Route path="/pruebas-luis" element={<AdminGestion />} /> 
+        <Route path="/locales" element={<Locales />} />
       </Routes>
     </Router>
   );
