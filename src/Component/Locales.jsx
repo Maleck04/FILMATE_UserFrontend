@@ -1,4 +1,5 @@
 import React from 'react';
+import Header from './Header';
 import './Locales.css';
 
 // ─── Datos temporales (se reemplazarán con llamadas a la API) ───────────────
@@ -47,6 +48,8 @@ const LOCALES = [
 
 export default function Locales() {
   return (
+    <div className="locales-wrapper">
+      <Header />
     <div className="locales-page">
       <h1 className="locales-titulo">Nuestros locales</h1>
 
@@ -93,6 +96,7 @@ export default function Locales() {
           </div>
         ))}
       </div>
+    </div>
     </div>
   );
 }
