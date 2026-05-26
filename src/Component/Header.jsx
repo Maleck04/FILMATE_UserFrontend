@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { LogOut, Menu, X } from 'lucide-react';
 import { Link, useNavigate, useLocation } from "react-router-dom";
+import { clearAuthSession, isRegisteredSession } from './authSession';
 
 export const Header = () => {
   const [showLogoutModal, setShowLogoutModal] = useState(false);
@@ -12,16 +13,19 @@ export const Header = () => {
 
   const handleLogout = () => {
     console.log('Cerrando sesión...');
+    clearAuthSession();
     navigate('/');
     setShowLogoutModal(false);
   };
+
+  const canSeeSocial = isRegisteredSession();
 
   const navItems = [
     { path: '/menuPrincipal', label: 'Cartelera' },
     { path: '/cines', label: 'Cines' },
     { path: '/dulceria', label: 'Dulcería' },
     { path: '/social', label: 'Social' },
-  ];
+  ].filter((item) => canSeeSocial || item.path !== '/social');
 
   return (
     <>
@@ -160,7 +164,7 @@ export const Header = () => {
         </div>
       )}
 
-      <style jsx>{`
+      <style>{`
         @keyframes fadeIn {
           from { opacity: 0; }
           to { opacity: 1; }

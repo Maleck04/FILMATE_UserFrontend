@@ -7,6 +7,7 @@ import Cines from './Component/Cines.jsx';
 import Dulceria from './Component/Dulceria.jsx';
 import Social from './Component/Social.jsx';
 import DetallePelicula from './Component/DetallePelicula.jsx';
+import ProtectedRoute from './Component/ProtectedRoute.jsx';
 
 function App() {
   return (
@@ -17,8 +18,15 @@ function App() {
         <Route path="/registro" element={<Registro />} />
         <Route path="/cines" element={<Cines />} />
         <Route path="/dulceria" element={<Dulceria />} />
-        <Route path="/social" element={<Social />} />
-        <Route path="/menuPrincipal/detallePelicula" element={<DetallePelicula />} />
+        <Route
+          path="/social"
+          element={
+            <ProtectedRoute requireRegistered>
+              <Social />
+            </ProtectedRoute>
+          }
+        />
+        <Route path="/menuPrincipal/detallePelicula/:movieId?" element={<DetallePelicula />} />
       </Routes>
     </Router>
   );

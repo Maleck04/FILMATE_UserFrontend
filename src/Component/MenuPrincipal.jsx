@@ -1,11 +1,53 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Star } from 'lucide-react';
 import Header from './Header.jsx';
+import Footer from './Footer.jsx';
 import { useNavigate } from 'react-router-dom';
 import { peliculas } from './peliculas';
+import { getMovies } from './filmateApi';
 
 export const MenuPrincipal = () => {
     const navigate = useNavigate();
+    const [peliculasData, setPeliculasData] = useState(peliculas);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+
+    useEffect(() => {
+        let isMounted = true;
+
+        const loadMovies = async () => {
+            try {
+                setLoading(true);
+                const movies = await getMovies();
+
+                if (!isMounted) return;
+
+                if (movies.length > 0) {
+                    setPeliculasData(movies);
+                    setError('');
+                } else {
+                    setPeliculasData(peliculas);
+                    setError('La API no devolvió películas, se muestran datos locales.');
+                }
+            } catch (err) {
+                if (!isMounted) return;
+
+                setPeliculasData(peliculas);
+                setError('No se pudo conectar con el backend, se muestran datos locales.');
+                console.error('Error cargando películas:', err);
+            } finally {
+                if (isMounted) {
+                    setLoading(false);
+                }
+            }
+        };
+
+        loadMovies();
+
+        return () => {
+            isMounted = false;
+        };
+    }, []);
 
     const renderStars = (rating) => {
         return (
@@ -25,18 +67,29 @@ export const MenuPrincipal = () => {
     };
 
     const irADetalle = (pelicula) => {
-        navigate('/menuPrincipal/detallePelicula', { state: pelicula });
+        navigate(`/menuPrincipal/detallePelicula/${pelicula.id}`, { state: pelicula });
     };
 
+    const displayPeliculas = peliculasData.length > 0 ? peliculasData : peliculas;
+
     return (
-        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 pb-16">
+        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex flex-col">
             <Header />
-            <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+            <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 w-full">
+                {error && (
+                    <div className="mb-8 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-amber-100">
+                        {error}
+                    </div>
+                )}
+
                 {/* Recomendaciones */}
                 <section className="mb-16">
                     <h2 className="text-4xl font-bold text-white mb-8">Recomendaciones</h2>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                        {peliculas.slice(0, 3).map((pelicula, i) => (
+                        {loading && displayPeliculas.length === 0 ? (
+                            <div className="col-span-full text-gray-300">Cargando películas...</div>
+                        ) : (
+                            displayPeliculas.slice(0, 3).map((pelicula, i) => (
                             <div
                                 key={i}
                                 onClick={() => irADetalle(pelicula)}
@@ -68,7 +121,8 @@ export const MenuPrincipal = () => {
                                     {renderStars(pelicula.rating)}
                                 </div>
                             </div>
-                        ))}
+                            ))
+                        )}
                     </div>
                 </section>
 
@@ -76,7 +130,7 @@ export const MenuPrincipal = () => {
                 <section>
                     <h2 className="text-4xl font-bold text-white mb-8">Cartelera</h2>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                        {peliculas
+                        {displayPeliculas
                             .slice() // para no mutar el original
                             .sort((a, b) => (b.estreno ? 1 : 0) - (a.estreno ? 1 : 0))
                             .map((pelicula, i) => (
@@ -115,6 +169,7 @@ export const MenuPrincipal = () => {
                     </div>
                 </section>
             </main>
+            <Footer />
         </div>
     );
 };
