@@ -171,13 +171,6 @@ export async function getShowtimesByCinema(cinemaId) {
   const data = await request(`/showtimes/cinema/${cinemaId}`);
   const funciones = extractShowtimeList(data);
 
-  if (import.meta.env.DEV) {
-    console.groupCollapsed(`[filmateApi] showtimes/cinema/${cinemaId}`);
-    console.log('raw response:', data);
-    console.log('normalized funciones:', funciones);
-    console.groupEnd();
-  }
-
   if (data && typeof data === 'object' && !Array.isArray(data)) {
     return {
       ...data,
@@ -186,6 +179,22 @@ export async function getShowtimesByCinema(cinemaId) {
   }
 
   return { funciones };
+}
+
+export async function getShowtimesByDate(targetDate, { cinemaId, movieId } = {}) {
+  const query = new URLSearchParams();
+
+  if (cinemaId !== undefined && cinemaId !== null && cinemaId !== '') {
+    query.set('cinema_id', String(cinemaId));
+  }
+
+  if (movieId !== undefined && movieId !== null && movieId !== '') {
+    query.set('movie_id', String(movieId));
+  }
+
+  const queryString = query.toString();
+  const data = await request(`/showtimes/date/${targetDate}${queryString ? `?${queryString}` : ''}`);
+  return Array.isArray(data) ? data : extractShowtimeList(data);
 }
 
 export async function getSeatMap(showtimeId) {
