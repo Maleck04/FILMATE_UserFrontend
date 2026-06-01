@@ -4,7 +4,7 @@ import Header from './Header.jsx';
 import Footer from './Footer.jsx';
 import { useNavigate } from 'react-router-dom';
 import { peliculas } from './peliculas';
-import { getCinemas, getMovies, getShowtimesByCinema } from './filmateApi';
+import { getCinemas, getMovies, getShowtimesByDate } from './filmateApi';
 
 const FALLBACK_MEDIA_IMAGE =
     "data:image/svg+xml;charset=UTF-8," +
@@ -79,35 +79,7 @@ export const MenuPrincipal = () => {
         return [];
     };
 
-    const toDateKey = (dateValue) => {
-        if (typeof dateValue === 'string') {
-            const hasTimezone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(dateValue);
-            const plainDateTimeMatch = dateValue.match(/^(\d{4}-\d{2}-\d{2})\s\d{2}:\d{2}:\d{2}$/);
-
-            if (plainDateTimeMatch && !hasTimezone) {
-                if (import.meta.env.DEV) {
-                    console.debug('[MenuPrincipal] toDateKey plain DATETIME ->', dateValue, '=>', plainDateTimeMatch[1]);
-                }
-                return plainDateTimeMatch[1];
-            }
-
-            const directDateOnlyMatch = dateValue.match(/^(\d{4}-\d{2}-\d{2})$/);
-            if (directDateOnlyMatch) {
-                if (import.meta.env.DEV) {
-                    console.debug('[MenuPrincipal] toDateKey date only ->', dateValue, '=>', directDateOnlyMatch[1]);
-                }
-                return directDateOnlyMatch[1];
-            }
-        }
-
-        const date = new Date(dateValue);
-        if (Number.isNaN(date.getTime())) {
-            if (import.meta.env.DEV) {
-                console.warn('[MenuPrincipal] toDateKey invalid date value:', dateValue);
-            }
-            return '';
-        }
-
+    const formatDateKey = (date) => {
         const parts = dateKeyFormatter.formatToParts(date);
         const year = parts.find((part) => part.type === 'year')?.value || '';
         const month = parts.find((part) => part.type === 'month')?.value || '';
@@ -126,17 +98,7 @@ export const MenuPrincipal = () => {
 
         const utcNoon = Date.UTC(year, month - 1, day, 12);
         const targetDate = new Date(utcNoon + offsetDays * 24 * 60 * 60 * 1000);
-        const key = toDateKey(targetDate);
-
-        if (import.meta.env.DEV) {
-            console.debug('[MenuPrincipal] getOffsetDateKey', {
-                offsetDays,
-                todayParts: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
-                key,
-            });
-        }
-
-        return key;
+        return formatDateKey(targetDate);
     };
 
     useEffect(() => {
@@ -187,51 +149,46 @@ export const MenuPrincipal = () => {
                 if (!isMounted) return;
                 setCinemasData(cinemas);
 
-                if (import.meta.env.DEV) {
-                    console.groupCollapsed('[MenuPrincipal] loadFilters');
-                    console.log('cinemas:', cinemas);
-                }
+                const dayKeys = {
+                    hoy: getOffsetDateKey(0),
+                    manana: getOffsetDateKey(1),
+                    pasado: getOffsetDateKey(2),
+                };
 
                 const catalogs = await Promise.all(
                     cinemas.map(async (cinema) => {
-                        try {
-                            const response = await getShowtimesByCinema(cinema.id);
-                            if (import.meta.env.DEV) {
-                                console.log(`cinema ${cinema.id} response keys:`, response ? Object.keys(response) : []);
-                                console.log(`cinema ${cinema.id} funciones count:`, Array.isArray(response?.funciones) ? response.funciones.length : 0);
-                                if (Array.isArray(response?.funciones) && response.funciones.length > 0) {
-                                    console.log(`cinema ${cinema.id} first funcion:`, response.funciones[0]);
-                                    console.log(
-                                        `cinema ${cinema.id} fecha keys:`,
-                                        response.funciones.map((funcion) => ({
-                                            id_funcion: funcion.id_funcion,
-                                            id_pelicula: funcion.id_pelicula,
-                                            fecha_hora_inicio: funcion.fecha_hora_inicio,
-                                            fechaKey: toDateKey(funcion.fecha_hora_inicio),
-                                        }))
-                                    );
+                        const funcionesByDayEntries = await Promise.all(
+                            Object.entries(dayKeys).map(async ([day, dateKey]) => {
+                                if (!dateKey) {
+                                    return [day, []];
                                 }
-                            }
-                            return {
-                                cinema,
-                                funciones: Array.isArray(response?.funciones) ? response.funciones : [],
-                            };
-                        } catch {
-                            return {
-                                cinema,
-                                funciones: [],
-                            };
-                        }
+
+                                try {
+                                    const response = await getShowtimesByDate(dateKey, { cinemaId: cinema.id });
+                                    return [day, Array.isArray(response) ? response : []];
+                                } catch (err) {
+                                    if (import.meta.env.DEV) {
+                                        console.warn(
+                                            `[MenuPrincipal] No se pudieron cargar funciones para cine ${cinema.id} en ${dateKey}`,
+                                            err
+                                        );
+                                    }
+
+                                    return [day, []];
+                                }
+                            })
+                        );
+                        const funcionesByDay = Object.fromEntries(funcionesByDayEntries);
+
+                        return {
+                            cinema,
+                            funcionesByDay,
+                        };
                     })
                 );
 
                 if (!isMounted) return;
                 setShowtimeCatalog(catalogs);
-
-                if (import.meta.env.DEV) {
-                    console.log('catalogs:', catalogs);
-                    console.groupEnd();
-                }
             } catch (err) {
                 if (!isMounted) return;
                 console.error('Error cargando filtros:', err);
@@ -292,60 +249,23 @@ export const MenuPrincipal = () => {
 
     const filteredPeliculas = useMemo(() => {
         const source = peliculasData.length > 0 ? peliculasData : peliculas;
-        const todayKey = getOffsetDateKey(0);
-        const tomorrowKey = getOffsetDateKey(1);
-        const afterTomorrowKey = getOffsetDateKey(2);
+        const selectedDayKeys =
+            selectedDay === 'all'
+                ? ['hoy', 'manana', 'pasado']
+                : [selectedDay];
         const matchingMovieIds = new Set();
-
-        if (import.meta.env.DEV) {
-            console.groupCollapsed('[MenuPrincipal] filteredPeliculas');
-            console.log('selectedCinema:', selectedCinema);
-            console.log('selectedDay:', selectedDay);
-            console.log('selectedGenre:', selectedGenre);
-            console.log('todayKey:', todayKey);
-            console.log('tomorrowKey:', tomorrowKey);
-            console.log('afterTomorrowKey:', afterTomorrowKey);
-            console.log('showtimeCatalog cinemas:', showtimeCatalog.map((item) => ({
-                cinemaId: item.cinema?.id,
-                cinemaName: item.cinema?.nombre,
-                funciones: Array.isArray(item.funciones) ? item.funciones.length : 0,
-            })));
-            console.log('showtimeCatalog today matches:', showtimeCatalog.map((item) => ({
-                cinemaId: item.cinema?.id,
-                matchesToday: Array.isArray(item.funciones)
-                    ? item.funciones.filter((funcion) => toDateKey(funcion.fecha_hora_inicio) === todayKey).length
-                    : 0,
-                matchesTomorrow: Array.isArray(item.funciones)
-                    ? item.funciones.filter((funcion) => toDateKey(funcion.fecha_hora_inicio) === tomorrowKey).length
-                    : 0,
-                matchesAfterTomorrow: Array.isArray(item.funciones)
-                    ? item.funciones.filter((funcion) => toDateKey(funcion.fecha_hora_inicio) === afterTomorrowKey).length
-                : 0,
-            })));
-        }
 
         showtimeCatalog.forEach((item) => {
             if (selectedCinema !== 'all' && String(item.cinema?.id) !== String(selectedCinema)) {
                 return;
             }
 
-            (Array.isArray(item.funciones) ? item.funciones : []).forEach((funcion) => {
-                const functionDateKey = toDateKey(funcion.fecha_hora_inicio);
-                const dayMatches =
-                    selectedDay === 'all' ||
-                    (selectedDay === 'hoy' && functionDateKey === todayKey) ||
-                    (selectedDay === 'manana' && functionDateKey === tomorrowKey) ||
-                    (selectedDay === 'pasado' && functionDateKey === afterTomorrowKey);
-
-                if (dayMatches) {
+            selectedDayKeys.forEach((dayKey) => {
+                (Array.isArray(item.funcionesByDay?.[dayKey]) ? item.funcionesByDay[dayKey] : []).forEach((funcion) => {
                     matchingMovieIds.add(String(funcion.id_pelicula));
-                }
+                });
             });
         });
-
-        if (import.meta.env.DEV) {
-            console.log('matchingMovieIds for filters:', Array.from(matchingMovieIds));
-        }
 
         const result = source.filter((pelicula) => {
             const movieGenres = getMovieGenres(pelicula);
@@ -360,11 +280,6 @@ export const MenuPrincipal = () => {
 
             return matchingMovieIds.has(String(pelicula.id));
         });
-
-        if (import.meta.env.DEV) {
-            console.log('filtered result movie ids:', result.map((pelicula) => pelicula.id));
-            console.groupEnd();
-        }
 
         return result;
     }, [peliculasData, selectedCinema, selectedDay, selectedGenre, showtimeCatalog]);
