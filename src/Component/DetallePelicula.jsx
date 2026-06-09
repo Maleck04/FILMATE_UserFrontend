@@ -30,6 +30,61 @@ const handleImageFallback = (event) => {
     event.currentTarget.src = FALLBACK_MEDIA_IMAGE;
 };
 
+const getShowtimeDateTime = (showtime) =>
+    showtime?.fecha_hora_inicio || showtime?.fecha_hora || showtime?.horario || '';
+
+const LIMA_TIME_ZONE = 'America/Lima';
+
+const detailDateFormatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: LIMA_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+});
+
+const formatDateKey = (date) => {
+    const parts = detailDateFormatter.formatToParts(date);
+    const year = parts.find((part) => part.type === 'year')?.value || '';
+    const month = parts.find((part) => part.type === 'month')?.value || '';
+    const day = parts.find((part) => part.type === 'day')?.value || '';
+
+    return year && month && day ? `${year}-${month}-${day}` : '';
+};
+
+const getOffsetDateKey = (offsetDays) => {
+    const todayParts = detailDateFormatter.formatToParts(new Date());
+    const year = Number(todayParts.find((part) => part.type === 'year')?.value || 0);
+    const month = Number(todayParts.find((part) => part.type === 'month')?.value || 0);
+    const day = Number(todayParts.find((part) => part.type === 'day')?.value || 0);
+
+    if (!year || !month || !day) return '';
+
+    const utcNoon = Date.UTC(year, month - 1, day, 12);
+    return formatDateKey(new Date(utcNoon + offsetDays * 24 * 60 * 60 * 1000));
+};
+
+const getShowtimeDateKey = (showtime) => {
+    const value = getShowtimeDateTime(showtime);
+    return value ? formatDateKey(new Date(value)) : '';
+};
+
+const formatShowtimeDateTime = (showtime) => {
+    const value = getShowtimeDateTime(showtime);
+    return value ? new Date(value).toLocaleString('es-PE') : 'Horario por definir';
+};
+
+const formatShowtimeTime = (showtime) => {
+    const value = getShowtimeDateTime(showtime);
+    return value
+        ? new Date(value).toLocaleTimeString('es-PE', {
+            hour: '2-digit',
+            minute: '2-digit',
+        })
+        : 'Horario';
+};
+
+const getSeatNumber = (seat) => seat?.numero ?? seat?.columna ?? '';
+
 export const DetallePelicula = () => {
     const { movieId } = useParams();
     const [showAllReviews, setShowAllReviews] = useState(false);
@@ -46,6 +101,7 @@ export const DetallePelicula = () => {
     const [movieDetails, setMovieDetails] = useState(null);
     const [movieLoading, setMovieLoading] = useState(Boolean(movieId));
     const [movieError, setMovieError] = useState('');
+    const [selectedShowtimeDay, setSelectedShowtimeDay] = useState('hoy');
     const location = useLocation();
     const navigate = useNavigate();
     const seatMapScrollRef = useRef(null);
@@ -53,6 +109,13 @@ export const DetallePelicula = () => {
     const seatSizes = useRef({});
 
     const pelicula = movieDetails || location.state;
+    const showtimeDays = [
+        { value: 'hoy', label: 'Hoy', dateKey: getOffsetDateKey(0) },
+        { value: 'manana', label: 'Mañana', dateKey: getOffsetDateKey(1) },
+        { value: 'pasado', label: 'Pasado mañana', dateKey: getOffsetDateKey(2) },
+    ];
+    const selectedShowtimeDateKey =
+        showtimeDays.find((day) => day.value === selectedShowtimeDay)?.dateKey || showtimeDays[0]?.dateKey || '';
 
     useEffect(() => {
         window.scrollTo(0, 0);
@@ -117,7 +180,10 @@ export const DetallePelicula = () => {
                         try {
                             const response = await getShowtimesByCinema(cinema.id);
                             const funciones = Array.isArray(response?.funciones)
-                                ? response.funciones.filter((funcion) => Number(funcion.id_pelicula) === Number(pelicula.id))
+                                ? response.funciones
+                                    .filter((funcion) => Number(funcion.id_pelicula) === Number(pelicula.id))
+                                    .filter((funcion) => getShowtimeDateKey(funcion) === selectedShowtimeDateKey)
+                                    .sort((a, b) => new Date(getShowtimeDateTime(a)) - new Date(getShowtimeDateTime(b)))
                                 : [];
 
                             return {
@@ -153,7 +219,7 @@ export const DetallePelicula = () => {
         return () => {
             isMounted = false;
         };
-    }, [pelicula?.id]);
+    }, [pelicula?.id, selectedShowtimeDateKey]);
 
     useEffect(() => {
         if (!selectedShow) return;
@@ -358,12 +424,11 @@ export const DetallePelicula = () => {
                 pelicula: titulo,
                 poster,
                 sede: selectedShow?.cinema?.nombre_cine || selectedShow?.cinema?.nombre || selectedShow?.sede?.nombre,
-                horario: selectedShow?.fecha_hora_inicio
-                    ? new Date(selectedShow.fecha_hora_inicio).toLocaleString('es-PE')
-                    : selectedShow?.horario,
+                horario: formatShowtimeDateTime(selectedShow),
                 sala: selectedShow?.nombre_sala || selectedShow?.sala,
                 id_funcion: selectedShow?.id_funcion,
-                asientos: selectedSeats.map((seat) => `${seat.fila}${seat.numero}`),
+                precio_base: Number(selectedShow?.precio_base || 0),
+                asientos: selectedSeats.map((seat) => `${seat.fila}${getSeatNumber(seat)}`),
                 seatIds: selectedSeats.map((seat) => seat.id_asiento),
                 asientosSeleccionados: selectedSeats,
             },
@@ -381,7 +446,8 @@ export const DetallePelicula = () => {
     const backendSeatRows = Object.entries(seatMapByRow).sort(([a], [b]) => a.localeCompare(b, 'es', { numeric: true }));
 
     const renderSeat = (seat, seatSize = 36) => {
-        const seatKey = seat.id_asiento ?? `${seat.fila}${seat.numero}`;
+        const seatNumber = getSeatNumber(seat);
+        const seatKey = seat.id_asiento ?? `${seat.fila}${seatNumber}`;
         const selected = selectedSeats.some((s) => s.id_asiento === seat.id_asiento);
         const unavailable = seat.estado && seat.estado !== 'Disponible';
         const c = selected
@@ -401,8 +467,8 @@ export const DetallePelicula = () => {
                 onPointerDown={(e) => e.preventDefault()}
                 onClick={() => toggleSeat(seat)}
                 aria-pressed={selected}
-                aria-label={`Asiento ${seat.fila}${seat.numero}, ${seat.estado ?? 'Disponible'}`}
-                title={`${seat.fila}${seat.numero} — ${seat.estado ?? 'Disponible'}`}
+                aria-label={`Asiento ${seat.fila}${seatNumber}, ${seat.estado ?? 'Disponible'}`}
+                title={`${seat.fila}${seatNumber} - ${seat.estado ?? 'Disponible'}`}
                 className={[
                     'flex flex-col items-center gap-1 bg-transparent border-none p-0',
                     'transition-transform duration-100 focus-visible:outline focus-visible:outline-2',
@@ -423,7 +489,7 @@ export const DetallePelicula = () => {
                     <rect x="6" y="1" width="24" height="24" rx="7" fill={c.sit} stroke={c.sitS} strokeWidth="1.2" />
                     <rect x="4" y="28" width="28" height="10" rx="4" fill={c.back} stroke={c.backS} strokeWidth="1" />
                     <text x="18" y="17" textAnchor="middle" fontSize="10" fontWeight="700" fill={c.num} fontFamily="sans-serif">
-                        {seat.numero}
+                        {seatNumber}
                     </text>
                     {selected && (
                         <rect x="1" y="1" width="34" height="38" rx="8" fill="none" stroke="#5DCAA5" strokeWidth="2" />
@@ -506,21 +572,14 @@ export const DetallePelicula = () => {
                                             {selectedShow.cinema?.nombre_cine || selectedShow.cinema?.nombre || selectedShow.sede?.nombre || 'Sede por definir'}
                                         </p>
                                         <p className="mt-1 text-base font-semibold text-[#5fa6ff] sm:text-2xl">
-                                            {selectedShow.fecha_hora_inicio
-                                                ? new Date(selectedShow.fecha_hora_inicio).toLocaleString('es-PE')
-                                                : selectedShow.horario}
+                                            {formatShowtimeDateTime(selectedShow)}
                                         </p>
                                     </div>
 
                                     <div className="flex items-center gap-3 text-[#5fa6ff]">
                                         <Clock3 className="h-6 w-6 sm:h-8 sm:w-8" />
                                         <p className="text-lg font-bold sm:text-2xl">
-                                            {selectedShow.fecha_hora_inicio
-                                                ? new Date(selectedShow.fecha_hora_inicio).toLocaleTimeString('es-PE', {
-                                                    hour: '2-digit',
-                                                    minute: '2-digit',
-                                                })
-                                                : selectedShow.horario}
+                                            {formatShowtimeTime(selectedShow)}
                                         </p>
                                     </div>
 
@@ -614,7 +673,7 @@ export const DetallePelicula = () => {
                                                 >
                                                     {seats
                                                         .slice()
-                                                        .sort((a, b) => a.numero - b.numero)
+                                                        .sort((a, b) => Number(getSeatNumber(a)) - Number(getSeatNumber(b)))
                                                         .map((seat) => renderSeat(seat, seatSize))}
                                                 </div>
 
@@ -736,6 +795,30 @@ export const DetallePelicula = () => {
 
                         {/* Horarios */}
                         <div className="space-y-4">
+                            <div className="flex flex-wrap gap-2">
+                                {showtimeDays.map((day) => {
+                                    const active = selectedShowtimeDay === day.value;
+
+                                    return (
+                                        <button
+                                            key={day.value}
+                                            type="button"
+                                            onClick={() => {
+                                                setSelectedShowtimeDay(day.value);
+                                                setSelectedShow(null);
+                                                setSelectedSeats([]);
+                                            }}
+                                            className={`rounded-full border px-4 py-2 text-sm font-semibold transition-colors ${
+                                                active
+                                                    ? 'border-red-400 bg-red-500 text-white'
+                                                    : 'border-slate-600 bg-slate-800 text-slate-200 hover:border-red-400 hover:bg-slate-700'
+                                            }`}
+                                        >
+                                            {day.label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
                             {showtimesLoading ? (
                                 <div className="rounded-3xl border border-slate-700/50 bg-slate-800/30 p-6 text-slate-300">
                                     Cargando horarios reales...
@@ -757,16 +840,13 @@ export const DetallePelicula = () => {
                                                     className="min-w-[120px] rounded-2xl border border-red-400/40 bg-red-500 px-4 py-3 text-left text-white shadow-lg transition-all duration-300 hover:scale-105 hover:bg-red-600"
                                                 >
                                                     <div className="text-lg font-bold">
-                                                        {new Date(funcion.fecha_hora_inicio).toLocaleTimeString('es-PE', {
-                                                            hour: '2-digit',
-                                                            minute: '2-digit',
-                                                        })}
+                                                        {formatShowtimeTime(funcion)}
                                                     </div>
                                                     <div className="mt-1 text-[0.7rem] uppercase tracking-[0.2em] text-red-100/90">
-                                                        {funcion.formato || 'Formato por definir'}
+                                                        {funcion.precio_base ? `S/. ${Number(funcion.precio_base).toFixed(2)}` : 'Precio por definir'}
                                                     </div>
                                                     <div className="mt-1 text-xs text-red-50">
-                                                        {funcion.idioma || 'Idioma por definir'}
+                                                        {funcion.nombre_sala || funcion.sala || 'Sala por definir'}
                                                     </div>
                                                 </button>
                                             ))}
@@ -775,7 +855,7 @@ export const DetallePelicula = () => {
                                 ))
                             ) : (
                                 <div className="rounded-3xl border border-slate-700/50 bg-slate-800/30 p-6 text-slate-200">
-                                    No hay funciones disponibles para esta película por el momento.
+                                    No hay funciones disponibles para esta película en la fecha seleccionada.
                                 </div>
                             )}
                         </div>
