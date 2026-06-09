@@ -115,13 +115,13 @@ export const MenuPrincipal = () => {
                     setError('');
                 } else {
                     setPeliculasData([]);
-                    setError('La API no devolvio peliculas para mostrar.');
+                    setError('La API no devolvió películas.');
                 }
             } catch (err) {
                 if (!isMounted) return;
 
                 setPeliculasData([]);
-                setError('No se pudo conectar con el backend para cargar peliculas.');
+                setError('No se pudo conectar con el backend.');
                 console.error('Error cargando películas:', err);
             } finally {
                 if (isMounted) {
@@ -164,7 +164,22 @@ export const MenuPrincipal = () => {
 
                                 try {
                                     const response = await getShowtimesByDate(dateKey, { cinemaId: cinema.id });
-                                    return [day, Array.isArray(response) ? response : []];
+                                    const funcionesOrdenadas = Array.isArray(response)
+                                        ? response
+                                            .slice()
+                                            .sort((a, b) => {
+                                                const timeA = new Date(a.fecha_hora_inicio).getTime();
+                                                const timeB = new Date(b.fecha_hora_inicio).getTime();
+
+                                                if (!Number.isNaN(timeA) && !Number.isNaN(timeB) && timeA !== timeB) {
+                                                    return timeA - timeB;
+                                                }
+
+                                                return (Number(a.id_funcion) || 0) - (Number(b.id_funcion) || 0);
+                                            })
+                                        : [];
+
+                                    return [day, funcionesOrdenadas];
                                 } catch (err) {
                                     if (import.meta.env.DEV) {
                                         console.warn(
@@ -238,6 +253,12 @@ export const MenuPrincipal = () => {
         });
 
         return Array.from(genres).sort((a, b) => a.localeCompare(b, 'es'));
+    }, [peliculasData]);
+
+    const allPeliculasSorted = useMemo(() => {
+        return peliculasData
+            .slice()
+            .sort((a, b) => (b.estreno ? 1 : 0) - (a.estreno ? 1 : 0));
     }, [peliculasData]);
 
     const filteredPeliculas = useMemo(() => {
@@ -479,5 +500,3 @@ export const MenuPrincipal = () => {
 };
 
 export default MenuPrincipal;
-
-
