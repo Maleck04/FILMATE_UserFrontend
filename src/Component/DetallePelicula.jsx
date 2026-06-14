@@ -3,7 +3,7 @@ import { AlertTriangle, ArrowLeft, ArrowRight, Armchair, Clock3, Clapperboard, S
 import Header from './Header.jsx';
 import Footer from './Footer.jsx';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { getCinemas, getMovieById, getSeatMap, getShowtimesByCinema } from './filmateApi';
+import { createSeatWebSocket, getMovieById, getSeatMap, getShowtimesByDate, normalizeSeat } from './filmateApi';
 
 const FALLBACK_MEDIA_IMAGE =
     "data:image/svg+xml;charset=UTF-8," +
@@ -65,12 +65,29 @@ const getOffsetDateKey = (offsetDays) => {
 
 const getShowtimeDateKey = (showtime) => {
     const value = getShowtimeDateTime(showtime);
+    const rawDate = String(value || '').match(/^(\d{4}-\d{2}-\d{2})/)?.[1];
+    if (rawDate) return rawDate;
+
     return value ? formatDateKey(new Date(value)) : '';
 };
 
-const formatShowtimeDateTime = (showtime) => {
+const formatShowtimeDateTime = (showtime, forcedDateKey = '') => {
     const value = getShowtimeDateTime(showtime);
-    return value ? new Date(value).toLocaleString('es-PE') : 'Horario por definir';
+    if (!value) return 'Horario por definir';
+
+    const dateKey = forcedDateKey || getShowtimeDateKey(showtime);
+    const timeMatch = String(value).match(/(\d{1,2}):(\d{2})/);
+    const timeText = timeMatch
+        ? `${timeMatch[1].padStart(2, '0')}:${timeMatch[2]}`
+        : new Date(value).toLocaleTimeString('es-PE', {
+            hour: '2-digit',
+            minute: '2-digit',
+        });
+
+    if (!dateKey) return timeText;
+
+    const [year, month, day] = dateKey.split('-');
+    return `${day}/${month}/${year}, ${timeText}`;
 };
 
 const formatShowtimeTime = (showtime) => {
@@ -84,6 +101,15 @@ const formatShowtimeTime = (showtime) => {
 };
 
 const getSeatNumber = (seat) => seat?.numero ?? seat?.columna ?? '';
+
+const getCinemaByRoomId = (roomId) => {
+    const id = Number(roomId);
+    if (id >= 1 && id <= 5) return { id: 1, nombre: 'Filmate La Molina' };
+    if (id >= 6 && id <= 9) return { id: 2, nombre: 'Filmate Miraflores' };
+    if (id >= 10 && id <= 13) return { id: 3, nombre: 'Filmate San Isidro' };
+    if (id >= 14 && id <= 19) return { id: 4, nombre: 'Filmate Surco' };
+    return { id: `sala-${roomId || 'sin-sede'}`, nombre: 'Sede por definir' };
+};
 
 export const DetallePelicula = () => {
     const { movieId } = useParams();
@@ -102,7 +128,6 @@ export const DetallePelicula = () => {
     const [movieDetails, setMovieDetails] = useState(null);
     const [movieLoading, setMovieLoading] = useState(Boolean(movieId));
     const [movieError, setMovieError] = useState('');
-    const [selectedShowtimeDay, setSelectedShowtimeDay] = useState('hoy');
     const location = useLocation();
     const navigate = useNavigate();
     const seatMapScrollRef = useRef(null);
@@ -114,7 +139,14 @@ export const DetallePelicula = () => {
     const returnSeatSelection =
         location.state?.returnToSeatSelection ||
         (location.state?.selectedShow ? location.state : null);
-    const seatPrice = 22.5;
+    const selectedShowtimeDateKey =
+        returnSeatSelection?.selectedDateKey ||
+        location.state?.selectedDateKey ||
+        getOffsetDateKey(0);
+    const selectedShowtimeDateLabel =
+        returnSeatSelection?.selectedDateLabel ||
+        location.state?.selectedDateLabel ||
+        selectedShowtimeDateKey;
 
     useEffect(() => {
         window.scrollTo(0, 0);
@@ -173,30 +205,35 @@ export const DetallePelicula = () => {
                 setShowtimesLoading(true);
                 setShowtimesError('');
 
-                const cinemas = await getCinemas();
-                const catalogs = await Promise.all(
-                    cinemas.map(async (cinema) => {
-                        try {
-                            const response = await getShowtimesByCinema(cinema.id);
-                            const funciones = Array.isArray(response?.funciones)
-                                ? response.funciones
-                                    .filter((funcion) => Number(funcion.id_pelicula) === Number(pelicula.id))
-                                    .filter((funcion) => getShowtimeDateKey(funcion) === selectedShowtimeDateKey)
-                                    .sort((a, b) => new Date(getShowtimeDateTime(a)) - new Date(getShowtimeDateTime(b)))
-                                : [];
+                const funciones = await getShowtimesByDate(selectedShowtimeDateKey, {
+                    movieId: pelicula.id,
+                });
+                const funcionesOrdenadas = Array.isArray(funciones)
+                    ? funciones
+                        .filter((funcion) => getShowtimeDateKey(funcion) === selectedShowtimeDateKey)
+                        .sort((a, b) => new Date(getShowtimeDateTime(a)) - new Date(getShowtimeDateTime(b)))
+                    : [];
 
-                            return {
-                                cinema,
-                                funciones,
-                            };
-                        } catch {
-                            return {
-                                cinema,
-                                funciones: [],
-                            };
-                        }
-                    })
-                );
+                const funcionesByCinema = funcionesOrdenadas.reduce((acc, funcion) => {
+                    const cinema = funcion.nombre_cine
+                        ? { id: funcion.id_cine || funcion.nombre_cine, nombre: funcion.nombre_cine }
+                        : getCinemaByRoomId(funcion.id_sala);
+                    const cinemaKey = String(cinema.id);
+
+                    if (!acc[cinemaKey]) {
+                        acc[cinemaKey] = {
+                            cinema,
+                            funciones: [],
+                        };
+                    }
+
+                    acc[cinemaKey].funciones.push({
+                        ...funcion,
+                        nombre_sala: funcion.nombre_sala || funcion.sala || `Sala ${funcion.id_sala || ''}`.trim(),
+                    });
+                    return acc;
+                }, {});
+                const catalogs = Object.values(funcionesByCinema);
 
                 if (!isMounted) return;
 
@@ -264,6 +301,49 @@ export const DetallePelicula = () => {
 
         return () => {
             isMounted = false;
+        };
+    }, [selectedShow?.id_funcion]);
+
+    useEffect(() => {
+        const functionId = selectedShow?.id_funcion;
+        if (!functionId) return undefined;
+
+        const socket = createSeatWebSocket(functionId);
+        if (!socket) return undefined;
+
+        socket.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                const data = message?.data || message;
+                const nextSeats = Array.isArray(data?.asientos)
+                    ? data.asientos.map(normalizeSeat)
+                    : [];
+
+                if (!nextSeats.length) return;
+
+                setSeatMap(nextSeats);
+                loadedSeatMapFunctionIdRef.current = functionId;
+                setSeatMapError('');
+                setSelectedSeats((current) =>
+                    current.filter((selectedSeat) =>
+                        nextSeats.some(
+                            (seat) =>
+                                seat.id_asiento === selectedSeat.id_asiento &&
+                                seat.estado === 'Disponible'
+                        )
+                    )
+                );
+            } catch (err) {
+                console.error('Error procesando websocket de asientos:', err);
+            }
+        };
+
+        socket.onerror = () => {
+            console.warn('No se pudo mantener la sincronizacion en vivo de asientos.');
+        };
+
+        return () => {
+            socket.close();
         };
     }, [selectedShow?.id_funcion]);
 
@@ -498,6 +578,7 @@ export const DetallePelicula = () => {
         setSelectedShow({
             cinema,
             ...showtime,
+            selectedShowtimeDateKey,
         });
         setSelectedSeats([]);
         setSeatMap([]);
@@ -512,6 +593,7 @@ export const DetallePelicula = () => {
             setSeatMapLoading(true);
             const response = await getSeatMap(showtime.id_funcion);
             setSeatMap(Array.isArray(response?.asientos) ? response.asientos : []);
+            loadedSeatMapFunctionIdRef.current = showtime.id_funcion;
         } catch (err) {
             console.error('Error cargando mapa de asientos:', err);
             setSeatMapError('No se pudo cargar el mapa de asientos real.');
@@ -532,13 +614,21 @@ export const DetallePelicula = () => {
     };
 
     const goToDulceria = () => {
+        if (getShowtimeDateKey(selectedShow) !== selectedShowtimeDateKey) {
+            setSeatMapError('La función seleccionada no corresponde a la fecha activa. Vuelve a elegir el horario.');
+            setSelectedShow(null);
+            setSelectedSeats([]);
+            return;
+        }
+
         navigate('/dulceria', {
             state: {
                 movieId: pelicula?.id ?? movieId,
                 pelicula: titulo,
                 poster,
                 sede: selectedShow?.cinema?.nombre_cine || selectedShow?.cinema?.nombre || selectedShow?.sede?.nombre,
-                horario: formatShowtimeDateTime(selectedShow),
+                horario: formatShowtimeDateTime(selectedShow, selectedShowtimeDateKey),
+                fecha_funcion: selectedShowtimeDateKey,
                 sala: selectedShow?.nombre_sala || selectedShow?.sala,
                 id_funcion: selectedShow?.id_funcion,
                 precio_base: Number(selectedShow?.precio_base || 0),
@@ -550,13 +640,16 @@ export const DetallePelicula = () => {
                     movieState: pelicula,
                     selectedShow,
                     selectedSeats,
+                    selectedDateKey: selectedShowtimeDateKey,
+                    selectedDateLabel: selectedShowtimeDateLabel,
                 },
             },
         });
     };
 
-    const selectedSeatLabels = selectedSeats.map((seat) => `${seat.fila}${seat.numero}`);
-    const selectedSeatsTotal = selectedSeats.length * seatPrice;
+    const selectedSeatLabels = selectedSeats.map((seat) => `${seat.fila}${getSeatNumber(seat)}`);
+    const selectedSeatPrice = Number(selectedShow?.precio_base || 0);
+    const selectedSeatsTotal = selectedSeats.length * selectedSeatPrice;
 
     const seatMapByRow = seatMap.reduce((acc, seat) => {
         if (!acc[seat.fila]) {
@@ -733,7 +826,7 @@ export const DetallePelicula = () => {
                                             {selectedShow.cinema?.nombre_cine || selectedShow.cinema?.nombre || selectedShow.sede?.nombre || 'Sede por definir'}
                                         </p>
                                         <p className="mt-1 text-base font-semibold text-[#5fa6ff] sm:text-2xl">
-                                            {formatShowtimeDateTime(selectedShow)}
+                                            {formatShowtimeDateTime(selectedShow, selectedShow?.selectedShowtimeDateKey || selectedShowtimeDateKey)}
                                         </p>
                                     </div>
 
@@ -995,29 +1088,8 @@ export const DetallePelicula = () => {
 
                         {/* Horarios */}
                         <div className="space-y-4">
-                            <div className="flex flex-wrap gap-2">
-                                {showtimeDays.map((day) => {
-                                    const active = selectedShowtimeDay === day.value;
-
-                                    return (
-                                        <button
-                                            key={day.value}
-                                            type="button"
-                                            onClick={() => {
-                                                setSelectedShowtimeDay(day.value);
-                                                setSelectedShow(null);
-                                                setSelectedSeats([]);
-                                            }}
-                                            className={`rounded-full border px-4 py-2 text-sm font-semibold transition-colors ${
-                                                active
-                                                    ? 'border-red-400 bg-red-500 text-white'
-                                                    : 'border-slate-600 bg-slate-800 text-slate-200 hover:border-red-400 hover:bg-slate-700'
-                                            }`}
-                                        >
-                                            {day.label}
-                                        </button>
-                                    );
-                                })}
+                            <div className="rounded-2xl border border-slate-700 bg-slate-900/70 px-4 py-3 text-sm font-semibold text-slate-200">
+                                Funciones para: {selectedShowtimeDateLabel}
                             </div>
                             {showtimesLoading ? (
                                 <div className="rounded-3xl border border-slate-700/50 bg-slate-800/30 p-6 text-slate-300">
@@ -1043,7 +1115,6 @@ export const DetallePelicula = () => {
                                     return (
                                     <div key={cinema.id} className="bg-gradient-to-r from-slate-700/30 to-slate-800/30 backdrop-blur-sm rounded-3xl p-6 border border-slate-700/50">
                                         <h3 className="text-white text-xl font-bold mb-2">{cinema.nombre}</h3>
-                                        <p className="mb-4 text-sm text-slate-300">{cinema.ciudad || 'Ciudad no disponible'}</p>
                                         <div className="flex flex-nowrap gap-3 overflow-x-auto pb-2">
                                             {funcionesOrdenadas.map((funcion) => (
                                                 <button
@@ -1358,3 +1429,4 @@ export const DetallePelicula = () => {
 };
 
 export default DetallePelicula;
+

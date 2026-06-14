@@ -11,49 +11,10 @@ import { getAuthSession } from './authSession';
 const FALLBACK_IMAGE = 'https://placehold.co/400x400/0f172a/f8fafc?text=Filmate';
 
 const productosData = {
-  combos: [
-    {
-      id: 1,
-      nombre: 'Combo Pareja',
-      descripcion: '1 cancha gigante + 2 gaseosas medianas.',
-      precio: 35,
-      imagen: 'https://images.pexels.com/photos/7603978/pexels-photo-7603978.jpeg',
-    },
-    {
-      id: 2,
-      nombre: 'Combo Familiar',
-      descripcion: '2 canchas gigantes + 4 gaseosas medianas + 2 nachos.',
-      precio: 65,
-      imagen: 'https://images.pexels.com/photos/10397068/pexels-photo-10397068.jpeg',
-    },
-  ],
-  popcorn: [
-    {
-      id: 3,
-      nombre: 'Popcorn Grande',
-      descripcion: 'Cancha dulce grande.',
-      precio: 18,
-      imagen: 'https://images.pexels.com/photos/10353949/pexels-photo-10353949.jpeg',
-    },
-  ],
-  bebidas: [
-    {
-      id: 4,
-      nombre: 'Gaseosa Grande 32oz',
-      descripcion: 'Bebida fria grande.',
-      precio: 12,
-      imagen: 'https://images.pexels.com/photos/9459202/pexels-photo-9459202.jpeg',
-    },
-  ],
-  dulces: [
-    {
-      id: 5,
-      nombre: 'M&M Compartir',
-      descripcion: 'Bolsa grande de chocolates.',
-      precio: 12,
-      imagen: 'https://placehold.co/800x800/0f172a/f8fafc?text=Dulces',
-    },
-  ],
+  combos: [],
+  popcorn: [],
+  bebidas: [],
+  dulces: [],
 };
 
 const categoryLabels = {
@@ -202,6 +163,7 @@ export const Dulceria = () => {
   const [productosPorCategoria, setProductosPorCategoria] = useState(productosData);
   const [labelsPorCategoria, setLabelsPorCategoria] = useState(categoryLabels);
   const [snacksError, setSnacksError] = useState('');
+  const [snacksLoading, setSnacksLoading] = useState(true);
   const [skipSnacksForReservation, setSkipSnacksForReservation] = useState(false);
   const [lastAddedId, setLastAddedId] = useState(null);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState('tarjeta');
@@ -278,13 +240,14 @@ export const Dulceria = () => {
 
     const loadSnacks = async () => {
       try {
+        setSnacksLoading(true);
         const { categories, products } = await getSnackProducts();
         if (!isMounted) return;
 
         if (!products.length) {
           setProductosPorCategoria(productosData);
           setLabelsPorCategoria(categoryLabels);
-          setSnacksError('La API no devolvio productos de dulceria, se muestran datos locales.');
+          setSnacksError('Dulceria aun no tiene productos disponibles.');
           return;
         }
 
@@ -308,7 +271,11 @@ export const Dulceria = () => {
         console.error('Error cargando productos de dulceria:', err);
         setProductosPorCategoria(productosData);
         setLabelsPorCategoria(categoryLabels);
-        setSnacksError('No se pudo conectar con productos de dulceria, se muestran datos locales.');
+        setSnacksError('No se pudo conectar con productos de dulceria.');
+      } finally {
+        if (isMounted) {
+          setSnacksLoading(false);
+        }
       }
     };
 
@@ -680,13 +647,35 @@ export const Dulceria = () => {
     navigate(-1);
   };
 
-  const renderCategory = (key, productos) => (
-    <section className="mb-12">
+  const renderCategory = (key, productos) => {
+    const label = labelsPorCategoria[key] || categoryLabels[key] || key;
+
+    return (
+      <section className="mb-12">
       <div className="mb-5">
         <h3 className="text-2xl font-bold text-white">{label}</h3>
       </div>
 
       <div className="relative">
+        {snacksLoading ? (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {[0, 1, 2].map((item) => (
+              <div key={item} className="h-72 animate-pulse rounded-2xl border border-slate-700 bg-slate-900">
+                <div className="h-40 rounded-t-2xl bg-slate-800" />
+                <div className="space-y-3 p-4">
+                  <div className="h-4 w-2/3 rounded bg-slate-800" />
+                  <div className="h-5 w-1/3 rounded bg-slate-800" />
+                  <div className="h-10 rounded bg-slate-800" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : productos.length === 0 ? (
+          <div className="rounded-2xl border border-slate-700 bg-slate-900/70 px-4 py-8 text-center text-sm text-slate-400">
+            Sin productos disponibles.
+          </div>
+        ) : (
+        <>
         {!scrollState[key]?.atStart && (
           <button
             onClick={() => scrollCategory(key, 'left')}
@@ -763,8 +752,10 @@ export const Dulceria = () => {
             <span className="text-xl leading-none">›</span>
           </button>
         )}
+        </>
+        )}
       </div>
-    </section>
+      </section>
     );
   };
 
