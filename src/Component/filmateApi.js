@@ -186,14 +186,20 @@ export function normalizeMovie(movie) {
     directorsFromRelations.join(', ') ||
     (typeof movie.directores === 'string' ? movie.directores : '') ||
     'Por definir';
+  const ratingValue = movie.promedio_resenas ?? movie.rating;
+  const normalizedRating = ratingValue === undefined || ratingValue === null
+    ? (((movie.id_pelicula || movie.id || 0) % 5) + 1)
+    : Math.round((Number(ratingValue) || 0) * 2) / 2;
 
   return {
     id: movie.id_pelicula || movie.id,
     titulo: movie.titulo,
+    anio: movie.anio_lanzamiento || movie.anio || null,
     genero: movie.genero || generos.join(', ') || 'Cartelera',
     duracion: formatDuration(movie.duracion_minutos),
     clasificacion: movie.clasificacion || movie.clasificacion_edad || 'APT',
-    rating: Math.round(movie.promedio_resenas || movie.rating || ((movie.id_pelicula % 5) + 1)),
+    rating: normalizedRating,
+    totalResenas: Number(movie.total_resenas || movie.totalResenas || 0),
     imagenPoster: movie.url_poster || '',
     imagenTrailer: movie.url_banner || movie.url_trailer || movie.url_poster || '',
     trailerUrl: movie.url_trailer || '',
@@ -201,7 +207,7 @@ export function normalizeMovie(movie) {
     sinopsis: movie.sinopsis || 'Sinopsis próxima a actualizar.',
     director: directorText,
     directores: directorsFromRelations,
-    reparto: movie.reparto || actorsFromRelations.join(', ') || 'Por definir',
+    reparto: reparto.join(', ') || 'Por definir',
     estreno: movie.categoria_cartelera === 'Estreno',
     categoriaCartelera: movie.categoria_cartelera,
     estadoRegistro: movie.estado_registro,
@@ -222,6 +228,18 @@ export function normalizeCinema(cinema) {
     horarios: cinema.horarios_apertura || cinema.horarios || 'Lunes a Domingo - 10:00 a.m. a 10:00 p.m.',
     mapa: cinema.url_mapa_embebido || '',
     estado: cinema.estado_cine || cinema.estado,
+  };
+}
+
+export function normalizeRoom(room) {
+  if (!room) return room;
+
+  return {
+    ...room,
+    id: room.id_sala || room.id,
+    nombre: room.nombre_sala || room.nombre || 'Sala',
+    tipoSala: room.tipo_sala || room.tipoSala || '',
+    tipoFormato: room.tipo_formato || room.tipoFormato || '',
   };
 }
 
@@ -361,6 +379,40 @@ export function normalizeRatedMovie(item) {
   };
 }
 
+export function normalizeMovieReview(review, user = null) {
+  const profile = normalizeUser(review?.usuario || review?.user || user);
+  const username =
+    profile?.username ||
+    review?.username ||
+    review?.nombre_usuario ||
+    review?.nombreUsuario ||
+    '';
+  const normalizedUsername = username
+    ? `@${String(username).replace(/^@/, '')}`
+    : profile?.nombre || review?.nombre || 'Usuario';
+
+  return {
+    id: review?.id_resena || review?.id,
+    userId: review?.id_usuario || profile?.id_usuario || profile?.id || null,
+    usuario: normalizedUsername,
+    avatar: profile?.url_perfil || review?.url_perfil || review?.avatar || '',
+    rating: Number(
+      review?.puntuacion_estrellas ??
+        review?.calificacion ??
+        review?.rating ??
+        review?.estrellas ??
+        0
+    ),
+    texto: review?.comentario || review?.texto || '',
+    fechaPublicacion:
+      review?.fecha_publicacion ||
+      review?.fechaPublicacion ||
+      review?.created_at ||
+      review?.fecha_creacion ||
+      null,
+  };
+}
+
 export async function getMovies({ skip = 0, limit = 50, generoId } = {}) {
   const query = new URLSearchParams();
   query.set('skip', String(skip));
@@ -388,6 +440,59 @@ export async function getMovieById(movieId) {
   return normalizeMovie(data);
 }
 
+export async function createMovieReview(payload) {
+  return request('/client/reviews/', {
+    method: 'POST',
+    body: JSON.stringify({
+      id_usuario: payload.id_usuario,
+      id_pelicula: payload.id_pelicula,
+      puntuacion_estrellas: payload.puntuacion_estrellas,
+      comentario: payload.comentario,
+    }),
+  });
+}
+
+export async function getMovieReviews(movieId) {
+  if (!movieId) return [];
+
+  const data = await request(`/client/reviews/movie/${movieId}`);
+  const reviews = asPayloadArray(data, ['results', 'reviews', 'resenas', 'items']);
+  const userIds = [
+    ...new Set(
+      reviews
+        .map((review) => review?.id_usuario || review?.usuario?.id_usuario || review?.user?.id_usuario)
+        .filter(Boolean)
+        .map(String)
+    ),
+  ];
+  const profiles = await Promise.all(
+    userIds.map(async (userId) => {
+      try {
+        return [userId, await getUserProfile(userId)];
+      } catch {
+        return [userId, null];
+      }
+    })
+  );
+  const profilesById = Object.fromEntries(profiles);
+
+  return reviews
+    .map((review) => {
+      const userId = String(
+        review?.id_usuario ||
+          review?.usuario?.id_usuario ||
+          review?.user?.id_usuario ||
+          ''
+      );
+      return normalizeMovieReview(review, profilesById[userId]);
+    })
+    .sort((firstReview, secondReview) => {
+      const firstDate = Date.parse(firstReview.fechaPublicacion || '') || 0;
+      const secondDate = Date.parse(secondReview.fechaPublicacion || '') || 0;
+      return secondDate - firstDate;
+    });
+}
+
 export async function getCinemas() {
   const data = await request('/client/cinemas/');
   return Array.isArray(data) ? data.map(normalizeCinema) : [];
@@ -396,6 +501,12 @@ export async function getCinemas() {
 export async function getCinemaById(cinemaId) {
   const data = await request(`/client/cinemas/${cinemaId}`);
   return normalizeCinema(data);
+}
+
+export async function getRoomById(roomId) {
+  if (!roomId) return null;
+  const data = await request(`/admin/rooms/${roomId}`);
+  return normalizeRoom(data);
 }
 
 const extractShowtimeList = (data) => {
@@ -679,23 +790,13 @@ export async function getFollowing(userId) {
 export async function followUser(followerId, followedId) {
   if (!followerId || !followedId) return null;
 
-  return requestFirstAvailable(
-    [
-      '/client/seguidores/',
-      '/client/seguidores/seguir',
-    ],
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        id_usuario: followerId,
-        id_seguidor: followerId,
-        id_usuario_seguidor: followerId,
-        id_usuario_seguido: followedId,
-        id_seguido: followedId,
-        seguido_id: followedId,
-      }),
-    }
-  );
+  return request('/client/seguidores/seguir', {
+    method: 'POST',
+    body: JSON.stringify({
+      id_usuario: followerId,
+      id_seguir: followedId,
+    }),
+  });
 }
 
 export async function getSnackCategories() {
