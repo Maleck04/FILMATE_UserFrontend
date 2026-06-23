@@ -6,7 +6,9 @@ import { getAuthSession } from './authSession';
 import {
   followUser,
   getFollowing,
+  getMovieById,
   getSocialSummary,
+  getUserInteractions,
   getUserRatedMovies,
   getUserRatingDistribution,
   searchMovies,
@@ -95,6 +97,9 @@ export const Social = () => {
   });
   const [ratingDistribution, setRatingDistribution] = useState(DEFAULT_RATING_DISTRIBUTION);
   const [ratedMovies, setRatedMovies] = useState([]);
+  const [activeTab, setActiveTab] = useState('Perfil');
+  const [watchedMovies, setWatchedMovies] = useState([]);
+  const [watchedLoading, setWatchedLoading] = useState(false);
   const [query, setQuery] = useState('');
   const [userSearchResults, setUserSearchResults] = useState([]);
   const [movieSearchResults, setMovieSearchResults] = useState([]);
@@ -234,6 +239,37 @@ export const Social = () => {
       window.clearTimeout(timer);
     };
   }, [query, shouldLoadSocial]);
+
+  useEffect(() => {
+    if (activeTab !== 'Películas' || !shouldLoadSocial || !viewedUserId) return;
+
+    let active = true;
+    setWatchedLoading(true);
+
+    getUserInteractions(viewedUserId)
+      .then((interactions) => {
+        if (!active) return;
+        const watchedIds = interactions
+          .filter((item) => item.vista)
+          .map((item) => item.id_pelicula);
+
+        return Promise.all(watchedIds.map((id) => getMovieById(id).catch(() => null)));
+      })
+      .then((movies) => {
+        if (!active) return;
+        setWatchedMovies((movies || []).filter(Boolean));
+      })
+      .catch(() => {
+        if (active) setWatchedMovies([]);
+      })
+      .finally(() => {
+        if (active) setWatchedLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [activeTab, shouldLoadSocial, viewedUserId]);
 
   const profileFallback = isOwnProfile ? sessionUser : null;
   const displayName = getDisplayName(profile || profileFallback, isRegistered);
@@ -518,9 +554,10 @@ export const Social = () => {
               <button
                 key={tab}
                 type="button"
-                aria-current={tab === 'Perfil' ? 'page' : undefined}
+                aria-current={tab === activeTab ? 'page' : undefined}
+                onClick={() => setActiveTab(tab)}
                 className={`border-x border-slate-800 py-4 text-base font-extrabold transition-colors sm:text-lg ${
-                  tab === 'Perfil' ? 'text-slate-100' : 'text-white/50 hover:text-white/80'
+                  tab === activeTab ? 'text-slate-100' : 'text-white/50 hover:text-white/80'
                 }`}
               >
                 {tab}
@@ -530,66 +567,112 @@ export const Social = () => {
         </section>
 
         <section className="flex flex-1 px-4 py-8 sm:px-6 lg:px-8">
-          <div className="grid w-full items-start gap-8 lg:grid-cols-[minmax(300px,0.32fr)_1fr]">
-            <aside className="space-y-7">
-              <div>
-                <h2 className="text-2xl font-bold text-white">Bio</h2>
-                <div className="mt-2 h-px w-full bg-white/60" />
-                <p className={`mt-3 text-lg font-semibold leading-snug ${hasRealBio ? 'text-white' : 'text-white/60'}`}>
-                  {bioText}
-                </p>
-              </div>
-
-              <div>
-                <h2 className="text-2xl font-bold text-white">Clasificación Personal</h2>
-                <div className="mt-2 h-px w-full bg-white/60" />
-                <div className="mt-8 grid min-h-32 w-full grid-cols-5 items-end gap-1 overflow-visible">
-                  {ratingBuckets.map((bucket) => (
-                    <div key={bucket.rating} className="group relative flex min-w-0 flex-col items-center gap-2">
-                      <div className="pointer-events-none absolute bottom-[calc(100%+0.5rem)] left-1/2 z-10 w-max max-w-36 -translate-x-1/2 rounded-md border border-white/20 bg-slate-950 px-2 py-1 text-center text-xs font-bold text-white opacity-0 shadow-lg shadow-black/40 transition-opacity group-hover:opacity-100">
-                        {bucket.hoverText}
-                      </div>
-                      <div
-                        className={`w-full rounded-t-full transition-opacity group-hover:opacity-70 ${bucket.count ? 'bg-[#ff2b50]' : 'bg-white/20'}`}
-                        style={{ height: bucket.height }}
-                        title={bucket.tooltip}
-                      />
-                      <span className="text-sm font-bold text-amber-400" title={bucket.tooltip}>
-                        &#9733; {bucket.rating}
-                      </span>
-                    </div>
-                  ))}
+          {activeTab === 'Perfil' && (
+            <div className="grid w-full items-start gap-8 lg:grid-cols-[minmax(300px,0.32fr)_1fr]">
+              <aside className="space-y-7">
+                <div>
+                  <h2 className="text-2xl font-bold text-white">Bio</h2>
+                  <div className="mt-2 h-px w-full bg-white/60" />
+                  <p className={`mt-3 text-lg font-semibold leading-snug ${hasRealBio ? 'text-white' : 'text-white/60'}`}>
+                    {bioText}
+                  </p>
                 </div>
-                {totalRatings > 0 ? (
-                  <div className="mt-3 space-y-2">
-                    <p className="text-sm font-medium text-white/55">
-                      {totalRatings} calificaciones registradas.
-                    </p>
-                    {chartRatingItems.slice(0, 5).map((item) => (
-                      <div key={item.movie?.id || item.movie?.titulo} className="flex items-center justify-between gap-3 text-sm">
-                        <span className="truncate font-semibold text-white/70">{item.movie?.titulo || 'Pelicula'}</span>
-                        <span className="shrink-0 font-black text-amber-400">★ {item.rating}</span>
+
+                <div>
+                  <h2 className="text-2xl font-bold text-white">Clasificación Personal</h2>
+                  <div className="mt-2 h-px w-full bg-white/60" />
+                  <div className="mt-8 grid min-h-32 w-full grid-cols-5 items-end gap-1 overflow-visible">
+                    {ratingBuckets.map((bucket) => (
+                      <div key={bucket.rating} className="group relative flex min-w-0 flex-col items-center gap-2">
+                        <div className="pointer-events-none absolute bottom-[calc(100%+0.5rem)] left-1/2 z-10 w-max max-w-36 -translate-x-1/2 rounded-md border border-white/20 bg-slate-950 px-2 py-1 text-center text-xs font-bold text-white opacity-0 shadow-lg shadow-black/40 transition-opacity group-hover:opacity-100">
+                          {bucket.hoverText}
+                        </div>
+                        <div
+                          className={`w-full rounded-t-full transition-opacity group-hover:opacity-70 ${bucket.count ? 'bg-[#ff2b50]' : 'bg-white/20'}`}
+                          style={{ height: bucket.height }}
+                          title={bucket.tooltip}
+                        />
+                        <span className="text-sm font-bold text-amber-400" title={bucket.tooltip}>
+                          &#9733; {bucket.rating}
+                        </span>
                       </div>
                     ))}
                   </div>
-                ) : (
-                  <p className="mt-3 text-sm font-medium text-white/55">
-                    Sin calificaciones disponibles.
-                  </p>
-                )}
+                  {totalRatings > 0 ? (
+                    <div className="mt-3 space-y-2">
+                      <p className="text-sm font-medium text-white/55">
+                        {totalRatings} calificaciones registradas.
+                      </p>
+                      {chartRatingItems.slice(0, 5).map((item) => (
+                        <div key={item.movie?.id || item.movie?.titulo} className="flex items-center justify-between gap-3 text-sm">
+                          <span className="truncate font-semibold text-white/70">{item.movie?.titulo || 'Pelicula'}</span>
+                          <span className="shrink-0 font-black text-amber-400">★ {item.rating}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-3 text-sm font-medium text-white/55">
+                      Sin calificaciones disponibles.
+                    </p>
+                  )}
+                </div>
+              </aside>
+
+              <div className="flex min-w-0 flex-col">
+                <h2 className="mb-5 text-3xl font-extrabold text-slate-100">Películas Favoritas</h2>
+
+                <div className="grid grid-cols-2 items-start gap-3 sm:grid-cols-3 sm:gap-4 xl:grid-cols-4 2xl:grid-cols-5">
+                  {favoriteSlots.map((movie, index) => (
+                    movie ? (
+                      <article
+                        key={`favorite-${movie.id}`}
+                        className="group aspect-[2/3] w-full cursor-pointer overflow-hidden rounded-md border border-slate-800 bg-slate-900 shadow-xl shadow-black/25 transition-transform hover:-translate-y-1 hover:shadow-2xl"
+                        title={movie.titulo}
+                        onClick={() => navigate(`/social/pelicula/${movie.id}`, { state: { movie } })}
+                      >
+                        <img
+                          src={movie.imagenPoster || FALLBACK_POSTER}
+                          alt={movie.titulo}
+                          className="h-full w-full object-cover"
+                          onError={handleImageFallback}
+                        />
+                      </article>
+                    ) : (
+                      <div
+                        key={`favorite-skeleton-${index}`}
+                        className="aspect-[2/3] w-full overflow-hidden rounded-md border border-slate-800 bg-gradient-to-br from-slate-800/90 via-slate-900 to-slate-800/70"
+                        aria-label={loading ? 'Cargando película favorita' : 'Espacio de película favorita disponible'}
+                      >
+                        <div className="h-full w-full bg-[linear-gradient(110deg,transparent_25%,rgba(255,255,255,0.04)_45%,transparent_65%)]" />
+                      </div>
+                    )
+                  ))}
+                </div>
               </div>
-            </aside>
+            </div>
+          )}
 
-            <div className="flex min-w-0 flex-col">
-              <h2 className="mb-5 text-3xl font-extrabold text-slate-100">Películas Favoritas</h2>
+          {activeTab === 'Películas' && (
+            <div className="w-full">
+              <h2 className="mb-5 text-3xl font-extrabold text-slate-100">Películas Vistas</h2>
 
-              <div className="grid grid-cols-2 items-start gap-3 sm:grid-cols-3 sm:gap-4 xl:grid-cols-4 2xl:grid-cols-5">
-                {favoriteSlots.map((movie, index) => (
-                  movie ? (
+              {watchedLoading ? (
+                <div className="flex gap-4 overflow-x-auto pb-4">
+                  {Array.from({ length: 6 }).map((_, index) => (
+                    <div
+                      key={`watched-skeleton-${index}`}
+                      className="aspect-[2/3] w-36 shrink-0 animate-pulse rounded-md border border-slate-800 bg-slate-800"
+                    />
+                  ))}
+                </div>
+              ) : watchedMovies.length > 0 ? (
+                <div className="flex gap-4 overflow-x-auto pb-4">
+                  {watchedMovies.map((movie) => (
                     <article
-                      key={`favorite-${movie.id}`}
-                      className="group aspect-[2/3] w-full overflow-hidden rounded-md border border-slate-800 bg-slate-900 shadow-xl shadow-black/25 transition-transform hover:-translate-y-1 hover:shadow-2xl"
+                      key={`watched-${movie.id}`}
+                      className="group aspect-[2/3] w-36 shrink-0 cursor-pointer overflow-hidden rounded-md border border-slate-800 bg-slate-900 shadow-xl shadow-black/25 transition-transform hover:-translate-y-1 hover:shadow-2xl"
                       title={movie.titulo}
+                      onClick={() => navigate(`/social/pelicula/${movie.id}`, { state: { movie } })}
                     >
                       <img
                         src={movie.imagenPoster || FALLBACK_POSTER}
@@ -598,19 +681,15 @@ export const Social = () => {
                         onError={handleImageFallback}
                       />
                     </article>
-                  ) : (
-                    <div
-                      key={`favorite-skeleton-${index}`}
-                      className="aspect-[2/3] w-full overflow-hidden rounded-md border border-slate-800 bg-gradient-to-br from-slate-800/90 via-slate-900 to-slate-800/70"
-                      aria-label={loading ? 'Cargando película favorita' : 'Espacio de película favorita disponible'}
-                    >
-                      <div className="h-full w-full bg-[linear-gradient(110deg,transparent_25%,rgba(255,255,255,0.04)_45%,transparent_65%)]" />
-                    </div>
-                  )
-                ))}
-              </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-slate-700 px-6 py-16 text-center text-white/60">
+                  No hay películas vistas aún.
+                </div>
+              )}
             </div>
-          </div>
+          )}
         </section>
       </main>
     </div>
