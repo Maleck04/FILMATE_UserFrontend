@@ -7,6 +7,7 @@ import { QRCodeCanvas } from 'qrcode.react';
 import jsPDF from 'jspdf';
 import { checkoutOrder, getSnackProducts } from './filmateApi';
 import { getAuthSession } from './authSession';
+import { addPurchaseToHistory, getSessionUserId } from './purchaseHistory';
 
 const productosData = {
   combos: [],
@@ -584,11 +585,51 @@ export const Dulceria = () => {
   const transactionId = checkoutResult?.id_transaccion || checkoutResult?.transaccion?.id_transaccion;
   const receiptCart = isSeatFlow && skipSnacksForReservation ? [] : carrito;
   const receiptTotal = Number(checkoutResult?.monto_total ?? checkoutResult?.transaccion?.monto_total ?? paymentTotal);
+  const primaryQrToken = checkoutResult?.boletos?.find((ticket) => ticket?.codigo_qr_token)?.codigo_qr_token;
   const qrValue =
-    checkoutResult?.qr?.payload_json ||
-    checkoutResult?.qr_payload?.payload_json ||
-    checkoutResult?.boletos?.map((ticket) => ticket.codigo_qr_token).filter(Boolean).join('|') ||
-    `FILMATE-${transactionId || pedidoNumber}-${receiptTotal.toFixed(2)}`;
+    primaryQrToken ||
+    `FILMATE|TXN:${transactionId || 'PEND'}|PED:${pedidoNumber}|TOTAL:${receiptTotal.toFixed(2)}`;
+
+  const buildPurchaseHistoryItem = (response = null) => {
+    const nextTransactionId = response?.id_transaccion || response?.transaccion?.id_transaccion || transactionId;
+    const nextReceiptTotal = Number(response?.monto_total ?? response?.transaccion?.monto_total ?? paymentTotal);
+    const nextPrimaryQrToken = response?.boletos?.find((ticket) => ticket?.codigo_qr_token)?.codigo_qr_token;
+
+    return {
+      id: nextTransactionId || pedidoNumber,
+      transactionId: nextTransactionId || null,
+      pedidoNumber,
+      createdAt: new Date().toISOString(),
+      method: selectedPayment?.label || selectedPaymentMethod,
+      total: nextReceiptTotal,
+      type: isSeatFlow ? 'Reserva y dulcería' : 'Solo dulcería',
+      qrValue:
+        nextPrimaryQrToken ||
+        `FILMATE|TXN:${nextTransactionId || 'PEND'}|PED:${pedidoNumber}|TOTAL:${nextReceiptTotal.toFixed(2)}`,
+      booking: bookingContext
+        ? {
+            pelicula: bookingContext.pelicula,
+            sede: bookingContext.sede,
+            horario: bookingContext.horario,
+            sala: bookingContext.sala,
+            asientos: bookingContext.asientos || [],
+            seatIds: bookingContext.seatIds || [],
+            subtotal: reservationTotal,
+          }
+        : null,
+      snacks: (isSeatFlow && skipSnacksForReservation ? [] : carrito).map((item) => ({
+        id: item.id,
+        nombre: item.nombre,
+        cantidad: item.cantidad,
+        precio: item.precio,
+        subtotal: item.precio * item.cantidad,
+      })),
+    };
+  };
+
+  const recordPurchase = (response = null) => {
+    addPurchaseToHistory(getSessionUserId(authSession), buildPurchaseHistoryItem(response));
+  };
 
   useEffect(() => {
     try {
@@ -968,6 +1009,24 @@ export const Dulceria = () => {
         });
 
         setCheckoutResult(response);
+        recordPurchase(response);
+        window.history.replaceState(
+          {
+            ...(window.history.state || {}),
+            usr: {
+              ...(bookingContext || {}),
+              returnToSeatSelection: bookingContext?.returnToSeatSelection
+                ? {
+                    ...bookingContext.returnToSeatSelection,
+                    selectedSeats: [],
+                  }
+                : undefined,
+              selectedSeats: [],
+              asientosSeleccionados: [],
+            },
+          },
+          ''
+        );
         setCheckoutView(checkoutViews.success);
       } catch (err) {
         setCheckoutError(err?.message || 'No se pudo completar la reserva.');
@@ -980,6 +1039,7 @@ export const Dulceria = () => {
     setIsProcessingPayment(true);
     await new Promise((resolve) => window.setTimeout(resolve, 1800));
     setIsProcessingPayment(false);
+    recordPurchase();
     setCheckoutView(checkoutViews.success);
   };
 
@@ -992,7 +1052,11 @@ export const Dulceria = () => {
           ? {
               movieState: bookingContext.returnToSeatSelection.movieState || null,
               selectedShow: bookingContext.returnToSeatSelection.selectedShow || null,
-              selectedSeats: bookingContext.returnToSeatSelection.selectedSeats || [],
+              selectedSeats: checkoutView === checkoutViews.success
+                ? []
+                : bookingContext.returnToSeatSelection.selectedSeats || [],
+              selectedDateKey: bookingContext.returnToSeatSelection.selectedDateKey,
+              selectedDateLabel: bookingContext.returnToSeatSelection.selectedDateLabel,
             }
           : bookingContext.movieState || null,
       });

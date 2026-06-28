@@ -8,6 +8,10 @@ const getWsBaseUrl = () => {
 
   if (typeof window === 'undefined') return '';
 
+  if (API_BASE_URL === '/api' && ['localhost', '127.0.0.1'].includes(window.location.hostname)) {
+    return 'ws://127.0.0.1:8000';
+  }
+
   const apiUrl = API_BASE_URL.startsWith('http')
     ? API_BASE_URL
     : `${window.location.origin}${API_BASE_URL.startsWith('/') ? '' : '/'}${API_BASE_URL}`;
@@ -73,7 +77,20 @@ async function request(path, options = {}) {
     throw new Error(message);
   }
 
-  return response.json();
+  if (response.status === 204) {
+    return {};
+  }
+
+  const raw = await response.text().catch(() => '');
+  if (!raw.trim()) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { message: raw };
+  }
 }
 
 async function requestFirstAvailable(paths, options = {}) {
@@ -203,7 +220,10 @@ export function normalizeMovie(movie) {
     clasificacion: movie.clasificacion || movie.clasificacion_edad || 'APT',
     rating: normalizedRating,
     totalResenas: Number(movie.total_resenas || movie.totalResenas || 0),
+    totalVistas: Number(movie.total_vistas_comunidad || movie.totalVistas || movie.vistas || 0),
+    totalFavoritos: Number(movie.total_favoritos_comunidad || movie.totalFavoritos || movie.favoritos || 0),
     imagenPoster: movie.url_poster || '',
+    imagenBanner: movie.url_banner || movie.imagenBanner || '',
     imagenTrailer: movie.url_banner || movie.url_trailer || movie.url_poster || '',
     trailerUrl: movie.url_trailer || '',
     trailer: 'TRÁILER OFICIAL',
@@ -249,9 +269,19 @@ export function normalizeRoom(room) {
 export function normalizeShowtime(showtime) {
   const fechaHora = showtime.fecha_hora || showtime.fecha_hora_inicio || showtime.horario || '';
   const precioBase = Number(showtime.precio_base ?? showtime.precio ?? 0);
+  const cinema = showtime.cine || showtime.cinema || showtime.sede || showtime.room?.cine || showtime.sala?.cine || null;
+  const room = showtime.room || showtime.salaDetalle || showtime.sala || null;
+  const idCine = showtime.id_cine ?? showtime.idCine ?? cinema?.id_cine ?? cinema?.id;
+  const nombreCine = showtime.nombre_cine ?? showtime.nombreCine ?? cinema?.nombre_cine ?? cinema?.nombre;
+  const idSala = showtime.id_sala ?? showtime.idSala ?? room?.id_sala ?? room?.id;
+  const nombreSala = showtime.nombre_sala ?? showtime.nombreSala ?? room?.nombre_sala ?? room?.nombre;
 
   return {
     ...showtime,
+    id_cine: idCine,
+    nombre_cine: nombreCine,
+    id_sala: idSala,
+    nombre_sala: nombreSala,
     fecha_hora_inicio: fechaHora,
     fecha_hora: fechaHora,
     horario: fechaHora,
@@ -346,11 +376,13 @@ export function normalizeSocialSummary(summary) {
     },
     favoriteMovies: asPayloadArray(
       summary?.top_favorites ||
-        summary?.favoriteMovies ||
-        summary?.favoritos ||
-        summary?.favorites,
+        summary?.topFavorites ||
+        summary?.profile_favorites ||
+        summary?.profileFavorites ||
+        summary?.peliculas_destacadas ||
+        summary?.favoritas_destacadas,
       ['results', 'movies', 'peliculas', 'items']
-    ).map(normalizeMovie),
+    ).slice(0, 5).map(normalizeMovie),
   };
 }
 
@@ -377,7 +409,16 @@ export function normalizeRatingDistribution(data) {
 
 export function normalizeRatedMovie(item) {
   return {
+    id: item?.id_resena || item?.id,
+    texto: item?.comentario || item?.texto || '',
     rating: Number(item?.calificacion ?? item?.rating ?? item?.puntuacion_estrellas ?? 0),
+    likes: Number(item?.likes ?? item?.total_likes ?? item?.totalLikes ?? item?.me_gusta ?? 0),
+    fechaPublicacion:
+      item?.fecha_publicacion ||
+      item?.fechaPublicacion ||
+      item?.created_at ||
+      item?.fecha_creacion ||
+      null,
     movie: normalizeMovie(item?.pelicula || item?.movie || item),
   };
 }
@@ -407,12 +448,15 @@ export function normalizeMovieReview(review, user = null) {
         0
     ),
     texto: review?.comentario || review?.texto || '',
+    likes: Number(review?.likes ?? review?.total_likes ?? review?.totalLikes ?? review?.me_gusta ?? 0),
+    likedByMe: Boolean(review?.liked_by_me ?? review?.likedByMe ?? review?.me_gusta_usuario),
     fechaPublicacion:
       review?.fecha_publicacion ||
       review?.fechaPublicacion ||
       review?.created_at ||
       review?.fecha_creacion ||
       null,
+    movie: normalizeMovie(review?.pelicula || review?.movie || review?.pelicula_resenada || null),
   };
 }
 
@@ -510,6 +554,25 @@ export async function getRoomById(roomId) {
   if (!roomId) return null;
   const data = await request(`/admin/rooms/${roomId}`);
   return normalizeRoom(data);
+}
+
+export async function likeMovieReview(reviewId, userId) {
+  if (!reviewId || !userId) return null;
+
+  return requestFirstAvailable([
+    `/client/reviews/${reviewId}/like`,
+    `/client/resenas/${reviewId}/like`,
+  ], {
+    method: 'POST',
+    body: JSON.stringify({
+      id_usuario: userId,
+    }),
+  });
+}
+
+export async function getRooms() {
+  const data = await request('/admin/rooms/');
+  return asPayloadArray(data, ['results', 'rooms', 'salas', 'items']).map(normalizeRoom);
 }
 
 const extractShowtimeList = (data) => {
@@ -759,6 +822,20 @@ export async function getUserRatedMovies(userId) {
   return asPayloadArray(data, ['results', 'movies', 'peliculas', 'items']).map(normalizeRatedMovie);
 }
 
+export async function getUserReviews(userId) {
+  if (!userId) return [];
+
+  const data = await requestFirstAvailable([
+    `/client/reviews/user/${userId}`,
+    `/client/resenas/user/${userId}`,
+    `/client/reviews/user/${userId}/list`,
+  ]);
+
+  return asPayloadArray(data, ['results', 'reviews', 'resenas', 'items']).map((review) =>
+    normalizeMovieReview(review)
+  );
+}
+
 export async function getUserInteractions(userId) {
   if (!userId) return [];
   const data = await request(`/client/interacciones/usuario/${userId}`);
@@ -776,6 +853,12 @@ export async function updateMovieInteraction(payload) {
       en_lista_seguimiento: Boolean(payload.en_lista_seguimiento),
     }),
   });
+}
+
+export async function getMovieInteraction(userId, movieId) {
+  if (!userId || !movieId) return null;
+  const interactions = await getUserInteractions(userId);
+  return interactions.find((item) => String(item.id_pelicula) === String(movieId)) || null;
 }
 
 export async function getFollowers(userId) {
@@ -797,6 +880,22 @@ export async function followUser(followerId, followedId) {
     method: 'POST',
     body: JSON.stringify({
       id_usuario: followerId,
+      id_seguir: followedId,
+    }),
+  });
+}
+
+export async function unfollowUser(followerId, followedId) {
+  if (!followerId || !followedId) return null;
+
+  return requestFirstAvailable([
+    '/client/seguidores/dejar-de-seguir',
+    '/client/seguidores/unfollow',
+  ], {
+    method: 'POST',
+    body: JSON.stringify({
+      id_usuario: followerId,
+      id_dejar_seguir: followedId,
       id_seguir: followedId,
     }),
   });
