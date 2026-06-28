@@ -4,9 +4,9 @@ import { Link } from 'react-router-dom';
 import Header from './Header.jsx';
 import { getAuthSession, saveRegisteredSession } from './authSession';
 import {
-  getMovies,
+  getMovieById,
   getSocialSummary,
-  searchMovies,
+  getUserInteractions,
   updateFavoriteMovies,
   updateSocialProfile,
   updateUserProfile,
@@ -15,8 +15,31 @@ import {
 const FALLBACK_POSTER = 'https://placehold.co/400x600/0f172a/f8fafc?text=Filmate';
 const MAX_FAVORITES = 5;
 const AVATAR_STYLES = ['bottts', 'adventurer', 'notionists', 'micah', 'personas'];
+const PROFILE_FAVORITES_PREFIX = 'filmate.social.profileFavorites.';
 
 const getUserId = (user) => user?.id_usuario || user?.id || user?.user_id || null;
+const getProfileFavoritesCacheKey = (userId) => `${PROFILE_FAVORITES_PREFIX}${userId}`;
+
+const readProfileFavoritesCache = (userId) => {
+  if (!userId) return [];
+
+  try {
+    const rawFavorites = window.localStorage.getItem(getProfileFavoritesCacheKey(userId));
+    return rawFavorites ? JSON.parse(rawFavorites) : [];
+  } catch {
+    return [];
+  }
+};
+
+const writeProfileFavoritesCache = (userId, movies) => {
+  if (!userId) return;
+
+  try {
+    window.localStorage.setItem(getProfileFavoritesCacheKey(userId), JSON.stringify(movies.slice(0, MAX_FAVORITES)));
+  } catch {
+    // Cache opcional de las 5 destacadas.
+  }
+};
 
 const getProfileForm = (profile) => ({
   nombre: profile?.nombre || [profile?.nombres, profile?.apellidos].filter(Boolean).join(' ').trim() || '',
@@ -83,15 +106,31 @@ export const SocialEditarPerfil = () => {
 
     Promise.allSettled([
       getSocialSummary(userId),
-      getMovies({ limit: 50 }),
+      getUserInteractions(userId)
+        .then((interactions) => {
+          const favoriteIds = interactions
+            .filter((item) => item.favorita)
+            .map((item) => item.id_pelicula)
+            .filter(Boolean);
+
+          return Promise.all(favoriteIds.map((id) => getMovieById(id).catch(() => null)));
+        })
+        .then((movies) => movies.filter(Boolean)),
     ])
-      .then(([summaryResult, moviesResult]) => {
+      .then(([summaryResult, interactionFavoritesResult]) => {
         if (!active) return;
+
+        const selectableFavorites =
+          interactionFavoritesResult.status === 'fulfilled' ? interactionFavoritesResult.value : [];
+        const selectableIds = new Set(selectableFavorites.map((movie) => String(movie.id)));
 
         if (summaryResult.status === 'fulfilled' && summaryResult.value) {
           const summary = summaryResult.value;
           const nextProfile = summary.profile || sessionUser;
-          const nextFavorites = summary.favoriteMovies.slice(0, MAX_FAVORITES);
+          const cachedFavorites = readProfileFavoritesCache(userId);
+          const nextFavorites = (cachedFavorites.length ? cachedFavorites : summary.favoriteMovies)
+            .filter((movie) => selectableIds.has(String(movie.id)))
+            .slice(0, MAX_FAVORITES);
 
           setProfile(nextProfile);
           setForm(getProfileForm(nextProfile));
@@ -100,12 +139,12 @@ export const SocialEditarPerfil = () => {
           setMovieCache((current) => mergeMovies(current, nextFavorites));
         }
 
-        if (moviesResult.status === 'fulfilled') {
-          setAllMovies(moviesResult.value);
-          setMovieCache((current) => mergeMovies(current, moviesResult.value));
+        if (interactionFavoritesResult.status === 'fulfilled') {
+          setAllMovies(selectableFavorites);
+          setMovieCache((current) => mergeMovies(current, selectableFavorites));
         }
 
-        const hasFailure = [summaryResult, moviesResult].some(
+        const hasFailure = [summaryResult, interactionFavoritesResult].some(
           (result) => result.status === 'rejected'
         );
 
@@ -131,33 +170,16 @@ export const SocialEditarPerfil = () => {
       };
     }
 
-    const normalizedQuery = movieQuery.trim();
-
     const timer = window.setTimeout(() => {
       if (!active) return;
-      setMovieSearchLoading(true);
-
-      const request = normalizedQuery ? searchMovies(normalizedQuery) : getMovies({ limit: 50 });
-
-      request
-        .then((movies) => {
-          if (!active) return;
-          setAllMovies(movies);
-          setMovieCache((current) => mergeMovies(current, movies));
-        })
-        .catch((err) => {
-          if (active) setError(err?.message || 'No se pudo buscar peliculas.');
-        })
-        .finally(() => {
-          if (active) setMovieSearchLoading(false);
-        });
-    }, normalizedQuery ? 300 : 0);
+      setMovieSearchLoading(false);
+    }, 0);
 
     return () => {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [modalOpen, movieQuery]);
+  }, [modalOpen]);
 
   const moviesById = useMemo(() => {
     const entries = [...movieCache, ...allMovies, ...favoriteMovies].map((movie) => [movie.id, movie]);
@@ -263,6 +285,13 @@ export const SocialEditarPerfil = () => {
       return;
     }
 
+    const selectableFavoriteIds = new Set(allMovies.map((movie) => String(movie.id)));
+    const hasOnlyFavoriteMovies = selectedMovieIds.every((movieId) => selectableFavoriteIds.has(String(movieId)));
+    if (!hasOnlyFavoriteMovies) {
+      setError('Tus 5 destacadas solo pueden salir de tu lista completa de peliculas favoritas.');
+      return;
+    }
+
     try {
       setSaving(true);
 
@@ -297,6 +326,7 @@ export const SocialEditarPerfil = () => {
       setProfileEditing(false);
       setFavoriteMovies(selectedMovies);
       setMovieCache((current) => mergeMovies(current, selectedMovies));
+      writeProfileFavoritesCache(userId, selectedMovies);
       setSuccess('Perfil actualizado correctamente.');
     } catch (err) {
       setError(err?.message || 'No se pudo actualizar el perfil.');
@@ -642,7 +672,7 @@ export const SocialEditarPerfil = () => {
             <div className="min-h-0 flex-1 overflow-y-auto p-5">
               {movieSearchLoading && (
                 <div className="mb-4 rounded-md border border-slate-700 bg-slate-950 px-4 py-3 text-sm font-semibold text-white/65">
-                  Buscando peliculas en la base de datos...
+                  Buscando en tus peliculas favoritas...
                 </div>
               )}
 
@@ -686,7 +716,7 @@ export const SocialEditarPerfil = () => {
 
               {!movieSearchLoading && !filteredMovies.length && (
                 <div className="flex min-h-60 items-center justify-center rounded-md border border-dashed border-slate-700 text-center text-sm font-semibold text-white/55">
-                  No hay peliculas para mostrar.
+                  Marca peliculas como favoritas desde Social para poder elegir tus 5 destacadas.
                 </div>
               )}
             </div>
@@ -704,7 +734,7 @@ export const SocialEditarPerfil = () => {
                 onClick={applyMovieSelection}
                 className="rounded-lg bg-[#2a6bb7] px-4 py-2 text-sm font-bold text-white transition-colors hover:bg-[#2f77c9]"
               >
-                Aplicar selección
+                Aplicar seleccion
               </button>
             </div>
           </div>

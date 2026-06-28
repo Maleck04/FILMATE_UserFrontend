@@ -4,7 +4,7 @@ import Header from './Header.jsx';
 import Footer from './Footer.jsx';
 import StarRatingDisplay from './StarRatingDisplay.jsx';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { createSeatWebSocket, getMovieById, getMovieReviews, getRoomById, getSeatMap, getShowtimesByDate, normalizeSeat } from './filmateApi';
+import { createSeatWebSocket, getCinemas, getMovieById, getMovieReviews, getRoomById, getRooms, getSeatMap, getShowtimesByDate, normalizeSeat } from './filmateApi';
 
 const FALLBACK_MEDIA_IMAGE =
     "data:image/svg+xml;charset=UTF-8," +
@@ -415,9 +415,23 @@ export const DetallePelicula = () => {
                 setShowtimesLoading(true);
                 setShowtimesError('');
 
-                const funciones = await getShowtimesByDate(selectedShowtimeDateKey, {
-                    movieId: pelicula.id,
-                });
+                const [showtimesResult, cinemasResult, roomsResult] = await Promise.allSettled([
+                    getShowtimesByDate(selectedShowtimeDateKey, {
+                        movieId: pelicula.id,
+                    }),
+                    getCinemas(),
+                    getRooms(),
+                ]);
+
+                if (showtimesResult.status === 'rejected') {
+                    throw showtimesResult.reason;
+                }
+
+                const funciones = showtimesResult.value;
+                const cinemas = cinemasResult.status === 'fulfilled' ? cinemasResult.value : [];
+                const rooms = roomsResult.status === 'fulfilled' ? roomsResult.value : [];
+                const cinemasById = new Map(cinemas.map((cinema) => [String(cinema.id), cinema]));
+                const roomsById = new Map(rooms.map((room) => [String(room.id), room]));
                 const funcionesOrdenadas = Array.isArray(funciones)
                     ? funciones
                         .filter((funcion) => getShowtimeDateKey(funcion) === selectedShowtimeDateKey)
@@ -425,8 +439,18 @@ export const DetallePelicula = () => {
                     : [];
 
                 const funcionesByCinema = funcionesOrdenadas.reduce((acc, funcion) => {
-                    const cinema = funcion.nombre_cine
-                        ? { id: funcion.id_cine || funcion.nombre_cine, nombre: funcion.nombre_cine }
+                    const room = roomsById.get(String(funcion.id_sala));
+                    const cinemaFromCatalog = cinemasById.get(String(funcion.id_cine ?? room?.id_cine));
+                    const cinemaName =
+                        funcion.nombre_cine ||
+                        cinemaFromCatalog?.nombre ||
+                        funcion.cinema?.nombre_cine ||
+                        funcion.cinema?.nombre ||
+                        funcion.cine?.nombre_cine ||
+                        funcion.cine?.nombre ||
+                        null;
+                    const cinema = cinemaName
+                        ? { id: funcion.id_cine ?? room?.id_cine ?? cinemaFromCatalog?.id ?? cinemaName, nombre: cinemaName }
                         : getCinemaByRoomId(funcion.id_sala);
                     const cinemaKey = String(cinema.id);
 
@@ -439,7 +463,9 @@ export const DetallePelicula = () => {
 
                     acc[cinemaKey].funciones.push({
                         ...funcion,
-                        nombre_sala: funcion.nombre_sala || funcion.sala || `Sala ${funcion.id_sala || ''}`.trim(),
+                        id_cine: funcion.id_cine ?? room?.id_cine ?? cinemaFromCatalog?.id,
+                        nombre_cine: cinema.nombre,
+                        nombre_sala: funcion.nombre_sala || room?.nombre || funcion.sala || `Sala ${funcion.id_sala || ''}`.trim(),
                     });
                     return acc;
                 }, {});
@@ -497,7 +523,9 @@ export const DetallePelicula = () => {
                 const response = await getSeatMap(functionId);
                 if (!isMounted) return;
 
-                setSeatMap(Array.isArray(response?.asientos) ? response.asientos : []);
+                const nextSeats = Array.isArray(response?.asientos) ? response.asientos : [];
+                setSeatMap(nextSeats);
+                setSelectedSeats((current) => keepAvailableSelectedSeats(current, nextSeats));
                 loadedSeatMapFunctionIdRef.current = functionId;
             } catch (err) {
                 if (!isMounted) return;
@@ -698,7 +726,9 @@ export const DetallePelicula = () => {
                 throw seatResult.reason;
             }
 
-            setSeatMap(Array.isArray(seatResult.value?.asientos) ? seatResult.value.asientos : []);
+            const nextSeats = Array.isArray(seatResult.value?.asientos) ? seatResult.value.asientos : [];
+            setSeatMap(nextSeats);
+            setSelectedSeats((current) => keepAvailableSelectedSeats(current, nextSeats));
             loadedSeatMapFunctionIdRef.current = showtime.id_funcion;
 
             if (roomResult.status === 'fulfilled' && roomResult.value) {
@@ -791,8 +821,8 @@ export const DetallePelicula = () => {
     const renderSeat = (seat, seatSize = 36) => {
         const seatNumber = getSeatNumber(seat);
         const seatKey = seat.id_asiento ?? `${seat.fila}${seatNumber}`;
-        const selected = selectedSeats.some((s) => s.id_asiento === seat.id_asiento);
         const unavailable = seat.estado && seat.estado !== 'Disponible';
+        const selected = !unavailable && selectedSeats.some((s) => s.id_asiento === seat.id_asiento);
 
         return (
             <button
