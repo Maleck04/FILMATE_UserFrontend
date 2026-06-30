@@ -5,8 +5,9 @@ import Footer from './Footer.jsx';
 import { AlertTriangle, ArrowLeft, CheckCircle2, CreditCard, Minus, Plus, ShoppingCart, Smartphone, X } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
 import jsPDF from 'jspdf';
-import { checkoutOrder, getSnackProducts } from './filmateApi';
+import { checkoutOrder, getSnackProducts, getSystemConfig } from './filmateApi';
 import { getAuthSession } from './authSession';
+import { addPurchaseToHistory, getSessionUserId } from './purchaseHistory';
 
 const productosData = {
   combos: [],
@@ -251,6 +252,9 @@ function VerificationModal({
 
 function PaymentModal({
   paymentTotal,
+  paymentSubtotal,
+  serviceFee,
+  taxAmount,
   isSeatFlow,
   seatsCount,
   reservationTotal,
@@ -281,6 +285,24 @@ function PaymentModal({
           <div className="mb-4 rounded-xl border border-blue-500/30 bg-blue-500/10 p-4">
             <p className="text-sm font-medium text-slate-300">Total a cobrar</p>
             <p className="mt-1 text-3xl font-extrabold tracking-tight text-white">S/. {paymentTotal.toFixed(2)}</p>
+            <div className="mt-3 space-y-1 text-sm text-slate-300">
+              <div className="flex items-center justify-between">
+                <span>Subtotal</span>
+                <span>S/. {paymentSubtotal.toFixed(2)}</span>
+              </div>
+              {serviceFee > 0 && (
+                <div className="flex items-center justify-between">
+                  <span>Tasa de servicio</span>
+                  <span>S/. {serviceFee.toFixed(2)}</span>
+                </div>
+              )}
+              {taxAmount > 0 && (
+                <div className="flex items-center justify-between">
+                  <span>IVA</span>
+                  <span>S/. {taxAmount.toFixed(2)}</span>
+                </div>
+              )}
+            </div>
             {isSeatFlow && (
               <p className="mt-2 text-sm leading-relaxed text-slate-200">
                 Asientos: {seatsCount} · Subtotal asientos: S/. {reservationTotal.toFixed(2)}
@@ -562,6 +584,7 @@ export const Dulceria = () => {
     bebidas: { atStart: true, atEnd: false },
     dulces: { atStart: true, atEnd: false },
   });
+  const [systemConfig, setSystemConfig] = useState({ tasaServicio: 0, ivaPorcentaje: 0 });
   const ticketRef = useRef(null);
   const sectionElementsRef = useRef({});
   const navigate = useNavigate();
@@ -580,15 +603,58 @@ export const Dulceria = () => {
   const reservationTotal = isSeatFlow ? seatsCount * seatPrice : 0;
   const total = snacksTotal + reservationTotal;
   const paymentSnackTotal = isSeatFlow && skipSnacksForReservation ? 0 : snacksTotal;
-  const paymentTotal = isSeatFlow ? reservationTotal + paymentSnackTotal : total;
+  const paymentSubtotal = isSeatFlow ? reservationTotal + paymentSnackTotal : snacksTotal;
+  const serviceFee = paymentSubtotal * (Number(systemConfig.tasaServicio || 0) / 100);
+  const taxAmount = (paymentSubtotal + serviceFee) * (Number(systemConfig.ivaPorcentaje || 0) / 100);
+  const paymentTotal = paymentSubtotal + serviceFee + taxAmount;
   const transactionId = checkoutResult?.id_transaccion || checkoutResult?.transaccion?.id_transaccion;
   const receiptCart = isSeatFlow && skipSnacksForReservation ? [] : carrito;
   const receiptTotal = Number(checkoutResult?.monto_total ?? checkoutResult?.transaccion?.monto_total ?? paymentTotal);
+  const primaryQrToken = checkoutResult?.boletos?.find((ticket) => ticket?.codigo_qr_token)?.codigo_qr_token;
   const qrValue =
-    checkoutResult?.qr?.payload_json ||
-    checkoutResult?.qr_payload?.payload_json ||
-    checkoutResult?.boletos?.map((ticket) => ticket.codigo_qr_token).filter(Boolean).join('|') ||
-    `FILMATE-${transactionId || pedidoNumber}-${receiptTotal.toFixed(2)}`;
+    primaryQrToken ||
+    `FILMATE|TXN:${transactionId || 'PEND'}|PED:${pedidoNumber}|TOTAL:${receiptTotal.toFixed(2)}`;
+
+  const buildPurchaseHistoryItem = (response = null) => {
+    const nextTransactionId = response?.id_transaccion || response?.transaccion?.id_transaccion || transactionId;
+    const nextReceiptTotal = Number(response?.monto_total ?? response?.transaccion?.monto_total ?? paymentTotal);
+    const nextPrimaryQrToken = response?.boletos?.find((ticket) => ticket?.codigo_qr_token)?.codigo_qr_token;
+
+    return {
+      id: nextTransactionId || pedidoNumber,
+      transactionId: nextTransactionId || null,
+      pedidoNumber,
+      createdAt: new Date().toISOString(),
+      method: selectedPayment?.label || selectedPaymentMethod,
+      total: nextReceiptTotal,
+      type: isSeatFlow ? 'Reserva y dulcería' : 'Solo dulcería',
+      qrValue:
+        nextPrimaryQrToken ||
+        `FILMATE|TXN:${nextTransactionId || 'PEND'}|PED:${pedidoNumber}|TOTAL:${nextReceiptTotal.toFixed(2)}`,
+      booking: bookingContext
+        ? {
+            pelicula: bookingContext.pelicula,
+            sede: bookingContext.sede,
+            horario: bookingContext.horario,
+            sala: bookingContext.sala,
+            asientos: bookingContext.asientos || [],
+            seatIds: bookingContext.seatIds || [],
+            subtotal: reservationTotal,
+          }
+        : null,
+      snacks: (isSeatFlow && skipSnacksForReservation ? [] : carrito).map((item) => ({
+        id: item.id,
+        nombre: item.nombre,
+        cantidad: item.cantidad,
+        precio: item.precio,
+        subtotal: item.precio * item.cantidad,
+      })),
+    };
+  };
+
+  const recordPurchase = (response = null) => {
+    addPurchaseToHistory(getSessionUserId(authSession), buildPurchaseHistoryItem(response));
+  };
 
   useEffect(() => {
     try {
@@ -598,6 +664,22 @@ export const Dulceria = () => {
       // Si el almacenamiento falla, la compra sigue funcionando en memoria.
     }
   }, [carrito, pedidoNumber, fechaCompra]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    getSystemConfig()
+      .then((config) => {
+        if (isMounted) setSystemConfig(config);
+      })
+      .catch(() => {
+        if (isMounted) setSystemConfig({ tasaServicio: 0, ivaPorcentaje: 0 });
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -937,8 +1019,9 @@ export const Dulceria = () => {
   const confirmarPago = async () => {
     if (isProcessingPayment) return;
 
+    const userId = authSession?.user?.id_usuario || authSession?.user?.id || authSession?.user?.user_id;
+
     if (isSeatFlow) {
-      const userId = authSession?.user?.id_usuario;
       const seatIds = bookingContext?.seatIds || [];
 
       if (!userId) {
@@ -960,7 +1043,11 @@ export const Dulceria = () => {
           id_funcion: bookingContext.id_funcion,
           ids_asientos: seatIds,
           metodo_pago: selectedPaymentMethod,
+          monto_boletos: reservationTotal,
           monto_confiteria: paymentSnackTotal,
+          monto_subtotal: paymentSubtotal,
+          tasa_servicio: serviceFee,
+          iva_monto: taxAmount,
           snacks: (skipSnacksForReservation ? [] : carrito).map((item) => ({
             id_producto: item.id,
             cantidad: item.cantidad,
@@ -968,6 +1055,24 @@ export const Dulceria = () => {
         });
 
         setCheckoutResult(response);
+        recordPurchase(response);
+        window.history.replaceState(
+          {
+            ...(window.history.state || {}),
+            usr: {
+              ...(bookingContext || {}),
+              returnToSeatSelection: bookingContext?.returnToSeatSelection
+                ? {
+                    ...bookingContext.returnToSeatSelection,
+                    selectedSeats: [],
+                  }
+                : undefined,
+              selectedSeats: [],
+              asientosSeleccionados: [],
+            },
+          },
+          ''
+        );
         setCheckoutView(checkoutViews.success);
       } catch (err) {
         setCheckoutError(err?.message || 'No se pudo completar la reserva.');
@@ -977,10 +1082,42 @@ export const Dulceria = () => {
       return;
     }
 
-    setIsProcessingPayment(true);
-    await new Promise((resolve) => window.setTimeout(resolve, 1800));
-    setIsProcessingPayment(false);
-    setCheckoutView(checkoutViews.success);
+    if (!userId) {
+      setCheckoutError('Debes iniciar sesiÃ³n para completar la compra.');
+      return;
+    }
+
+    if (carrito.length === 0) {
+      setCheckoutError('Agrega al menos un producto para completar la compra.');
+      return;
+    }
+
+    try {
+      setCheckoutError('');
+      setIsProcessingPayment(true);
+
+      const response = await checkoutOrder({
+        id_usuario: userId,
+        metodo_pago: selectedPaymentMethod,
+        monto_boletos: 0,
+        monto_confiteria: paymentSnackTotal,
+        monto_subtotal: paymentSubtotal,
+        tasa_servicio: serviceFee,
+        iva_monto: taxAmount,
+        snacks: carrito.map((item) => ({
+          id_producto: item.id,
+          cantidad: item.cantidad,
+        })),
+      });
+
+      setCheckoutResult(response);
+      recordPurchase(response);
+      setCheckoutView(checkoutViews.success);
+    } catch (err) {
+      setCheckoutError(err?.message || 'No se pudo completar la compra.');
+    } finally {
+      setIsProcessingPayment(false);
+    }
   };
 
   const selectedPayment = paymentOptions.find((option) => option.id === selectedPaymentMethod);
@@ -992,7 +1129,11 @@ export const Dulceria = () => {
           ? {
               movieState: bookingContext.returnToSeatSelection.movieState || null,
               selectedShow: bookingContext.returnToSeatSelection.selectedShow || null,
-              selectedSeats: bookingContext.returnToSeatSelection.selectedSeats || [],
+              selectedSeats: checkoutView === checkoutViews.success
+                ? []
+                : bookingContext.returnToSeatSelection.selectedSeats || [],
+              selectedDateKey: bookingContext.returnToSeatSelection.selectedDateKey,
+              selectedDateLabel: bookingContext.returnToSeatSelection.selectedDateLabel,
             }
           : bookingContext.movieState || null,
       });
@@ -1281,6 +1422,9 @@ export const Dulceria = () => {
       {checkoutView === checkoutViews.payment && (
         <PaymentModal
           paymentTotal={paymentTotal}
+          paymentSubtotal={paymentSubtotal}
+          serviceFee={serviceFee}
+          taxAmount={taxAmount}
           isSeatFlow={isSeatFlow}
           seatsCount={seatsCount}
           reservationTotal={reservationTotal}
